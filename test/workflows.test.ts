@@ -1,0 +1,63 @@
+import assert from 'node:assert/strict';
+import { readFileSync, readdirSync } from 'node:fs';
+import test from 'node:test';
+import { parse } from 'yaml';
+
+const read = (name: string) => parse(readFileSync(`.github/workflows/${name}`, 'utf8'));
+
+test('controller listens for intake, new commands, completion, and recovery events', () => {
+  const workflow = read('sdlc-controller.yml');
+  assert.deepEqual(workflow.on.issue_comment.types, ['created']);
+  assert.ok(workflow.on.issues.types.includes('labeled'));
+  assert.ok(workflow.on.schedule.length);
+  assert.equal(workflow.concurrency['cancel-in-progress'], false);
+  assert.equal(workflow.jobs.reconcile.environment, 'sdlc-controller');
+  assert.match(workflow.jobs.reconcile.if, /SDLC_ENABLED/);
+  assert.match(workflow.jobs.reconcile.if, /default_branch/);
+});
+
+test('generated agents have no publishing credentials or direct write permissions', () => {
+  const source = readFileSync('.github/workflows/sdlc-agent.md', 'utf8');
+  const frontmatter = parse(source.split('---')[1]!);
+  assert.equal(frontmatter.permissions.contents, 'read');
+  assert.equal(frontmatter.permissions.issues, 'read');
+  assert.equal(frontmatter.permissions['pull-requests'], 'read');
+  assert.equal(frontmatter.checkout[0].ref, '${{ github.sha }}');
+  assert.ok(frontmatter['max-ai-credits'] <= 200);
+  assert.equal(source.includes('SDLC_APP_PRIVATE_KEY'), false);
+  assert.equal(source.includes('create-github-app-token'), false);
+  assert.equal(source.includes('create-pull-request:'), false);
+  const compiled = read('sdlc-agent.lock.yml');
+  assert.equal(compiled.jobs.agent.permissions.contents, 'read');
+});
+
+test('checks cannot pass by silently skipping a required stage', () => {
+  const workflow = read('sdlc-checks.yml');
+  assert.deepEqual(workflow.jobs.result.needs, ['prepare', 'codeql', 'security', 'tests']);
+  assert.match(workflow.jobs.result.if, /always\(\)/);
+  assert.equal(workflow.permissions.contents, 'read');
+  assert.equal(workflow.jobs.tests.permissions, undefined);
+  assert.equal(JSON.stringify(workflow.jobs.tests).includes('secrets.'), false);
+  assert.equal(workflow.jobs.codeql.steps.find((step: { uses?: string }) => step.uses?.includes('/init@')).with['build-mode'], 'none');
+});
+
+test('manual workflows pin actions to immutable commits and never persist git credentials', () => {
+  for (const name of ['ci.yml', 'sdlc-controller.yml', 'sdlc-checks.yml']) {
+    for (const job of Object.values(read(name).jobs) as { steps: { uses?: string; with?: Record<string, unknown> }[] }[]) {
+      for (const step of job.steps) {
+        if (step.uses) assert.match(step.uses, /@[a-f0-9]{40}$/);
+        if (step.uses?.startsWith('actions/checkout@')) assert.equal(step.with?.['persist-credentials'], false);
+      }
+    }
+  }
+});
+
+test('every agent stage has a valid repository-scoped role profile', () => {
+  const files = readdirSync('.github/agents');
+  for (const stage of ['research', 'decompose', 'code', 'security', 'test', 'review']) {
+    assert.ok(files.includes(`${stage}.agent.md`));
+    const profile = parse(readFileSync(`.github/agents/${stage}.agent.md`, 'utf8').split('---')[1]!);
+    assert.ok(profile.description.length > 30);
+    assert.ok(profile.tools.length);
+  }
+});

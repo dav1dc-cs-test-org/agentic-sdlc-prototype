@@ -1,0 +1,29 @@
+name: Agentic Feature
+description: Request a bounded feature for the approval-gated agentic pipeline
+title: "[Feature] "
+labels: [agentic-SDLC]
+body:
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+      description: Describe the outcome and who needs it.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: State observable behaviors that tests can verify.
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints and Non-goals
+      description: Include compatibility, data, security, and scope constraints.
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Link relevant code or documentation. Do not include credentials or secrets.

@@ -1,0 +1,4 @@
+title = "Trusted SDLC secret scanning configuration"
+
+[extend]
+useDefault = true

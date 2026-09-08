@@ -1,0 +1,7 @@
+node_modules/
+dist/
+coverage/
+.sdlc-output/
+.sdlc-context.json
+.artifacts/
+.DS_Store

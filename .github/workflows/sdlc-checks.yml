@@ -1,0 +1,217 @@
+name: SDLC Checks
+run-name: SDLC ${{ inputs.job }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Registered parent issue number
+        required: true
+        type: string
+      job:
+        description: Registered job identifier
+        required: true
+        type: string
+      source_sha:
+        description: Immutable candidate commit
+        required: true
+        type: string
+      control_sha:
+        description: Immutable trusted workflow commit
+        required: true
+        type: string
+      stage:
+        description: Registered deterministic check stage
+        required: true
+        type: choice
+        options: [scan, validate]
+
+permissions:
+  contents: read
+concurrency:
+  group: sdlc-checks-${{ inputs.job }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: >-
+      vars.SDLC_ENABLED == 'true' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+      github.actor == format('{0}[bot]', vars.SDLC_APP_SLUG) &&
+      github.sha == inputs.control_sha
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      base_sha: ${{ steps.context.outputs.base_sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '24'
+      - run: npm ci --ignore-scripts
+      - id: context
+        run: node src/worker.ts prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SDLC_BOT_LOGIN: ${{ vars.SDLC_APP_SLUG }}[bot]
+          SDLC_ISSUE: ${{ inputs.issue }}
+          SDLC_JOB: ${{ inputs.job }}
+          SDLC_SOURCE_SHA: ${{ inputs.source_sha }}
+          SDLC_CONTROL_SHA: ${{ inputs.control_sha }}
+          SDLC_STAGE: ${{ inputs.stage }}
+  codeql:
+    needs: prepare
+    if: inputs.stage == 'scan'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '24'
+      - run: npm ci --ignore-scripts --prefix control
+      - uses: github/codeql-action/init@fddeee1a7ece751b577e409a89057319e3172939
+        with:
+          languages: javascript-typescript
+          build-mode: none
+          source-root: source
+          queries: security-extended
+      - uses: github/codeql-action/analyze@fddeee1a7ece751b577e409a89057319e3172939
+        with:
+          output: ${{ runner.temp }}/sarif
+          upload: false
+      - name: Enforce CodeQL findings policy
+        run: node control/src/validate.ts sarif "$RUNNER_TEMP/sarif"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: sdlc-codeql
+          path: ${{ runner.temp }}/sarif
+          retention-days: 14
+  security:
+    needs: prepare
+    if: inputs.stage == 'scan'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '24'
+      - run: npm ci --ignore-scripts --prefix control
+      - name: Check dependencies against the advisory database
+        run: |
+          npm --prefix source audit --ignore-scripts --package-lock-only --audit-level=high --json > "$RUNNER_TEMP/audit.json"
+          node control/src/validate.ts audit "$RUNNER_TEMP/audit.json"
+      - name: Install checksum-pinned secret scanner
+        run: |
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            --output "$RUNNER_TEMP/gitleaks.tar.gz"
+          printf '%s  %s\n' '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb' "$RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+      - name: Detect secrets without source-controlled suppressions
+        run: |
+          "$RUNNER_TEMP/gitleaks" dir source --no-banner --redact \
+            --config control/.github/sdlc/gitleaks.toml --gitleaks-ignore-path /dev/null \
+            --ignore-gitleaks-allow --report-format json --report-path "$RUNNER_TEMP/secrets.json"
+          node control/src/validate.ts secrets "$RUNNER_TEMP/secrets.json"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: sdlc-security
+          path: |
+            ${{ runner.temp }}/audit.json
+            ${{ runner.temp }}/secrets.json
+          retention-days: 14
+  tests:
+    needs: prepare
+    if: inputs.stage == 'validate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ needs.prepare.outputs.base_sha }}
+          path: baseline
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '24'
+      - name: Install dependencies without lifecycle scripts
+        run: |
+          npm ci --ignore-scripts --prefix control
+          npm ci --ignore-scripts --prefix baseline
+          npm ci --ignore-scripts --prefix source
+      - name: Execute baseline and candidate tests under immutable coverage policy
+        run: node control/src/validate.ts tests source baseline
+        env:
+          SDLC_COVERAGE_DIR: ${{ runner.temp }}/coverage
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: sdlc-coverage
+          path: ${{ runner.temp }}/coverage
+          retention-days: 14
+  result:
+    name: SDLC Check Result
+    needs: [prepare, codeql, security, tests]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '24'
+      - run: npm ci --ignore-scripts
+      - name: Produce the machine-verified result
+        run: node src/worker.ts checks
+        env:
+          SDLC_JOB: ${{ inputs.job }}
+          SDLC_SOURCE_SHA: ${{ inputs.source_sha }}
+          SDLC_STAGE: ${{ inputs.stage }}
+          SDLC_CHECK_RESULTS: ${{ toJSON(needs) }}
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: sdlc-result
+          path: .sdlc-output/result.json
+          if-no-files-found: error
+          retention-days: 14

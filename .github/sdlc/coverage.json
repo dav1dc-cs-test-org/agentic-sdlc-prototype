@@ -1,0 +1,6 @@
+{
+  "all": true,
+  "reporter": ["text", "json-summary", "lcov"],
+  "exclude": ["test/**", "node_modules/**", "dist/**"],
+  "excludeAfterRemap": true
+}

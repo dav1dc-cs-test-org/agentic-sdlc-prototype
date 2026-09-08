@@ -1,0 +1,63 @@
+name: Agentic SDLC Controller
+
+on:
+  issues:
+    types: [opened, labeled, unlabeled, edited, closed, reopened]
+  issue_comment:
+    types: [created]
+  workflow_run:
+    workflows: [SDLC Agent, SDLC Checks]
+    types: [completed]
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Parent issue number; leave empty to reconcile all lifecycles
+        required: false
+        type: string
+
+permissions: {}
+concurrency:
+  group: sdlc-controller-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    if: >-
+      vars.SDLC_ENABLED == 'true' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+      !github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: sdlc-controller
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '24'
+      - name: Install immutable controller dependencies
+        run: npm ci --ignore-scripts
+      - name: Mint the scoped publisher token
+        id: app
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ vars.SDLC_APP_ID }}
+          private-key: ${{ secrets.SDLC_APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+          permission-actions: write
+          permission-checks: write
+      - name: Reconcile authoritative lifecycle state
+        run: node src/main.ts
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          SDLC_BOT_LOGIN: ${{ steps.app.outputs.app-slug }}[bot]
+          SDLC_ISSUE: ${{ inputs.issue }}

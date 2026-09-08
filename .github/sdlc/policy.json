@@ -1,0 +1,20 @@
+{
+  "label": "agentic-SDLC",
+  "stateBranch": "sdlc-state",
+  "maxTasks": 6,
+  "maxRepairs": 2,
+  "maxJobAttempts": 2,
+  "maxJobs": 40,
+  "jobTimeoutMinutes": 90,
+  "dispatchGraceMinutes": 10,
+  "maxFiles": 30,
+  "maxChangeBytes": 512000,
+  "protectedPaths": [
+    ".github/**", ".agents/**", ".vscode/**", "AGENTS.md", "**/AGENTS.md",
+    ".npmrc", "**/.npmrc", ".gitmodules", ".gitattributes", "**/.gitattributes",
+    "src/*.ts", "tsconfig.json", ".c8rc.json", "**/*instructions.md", "**/*.agent.md"
+  ],
+  "testPaths": ["test/**/*.test.ts"],
+  "sourcePaths": ["src/**/*.ts"],
+  "coverage": { "lines": 80, "branches": 70, "maxDrop": 0 }
+}
