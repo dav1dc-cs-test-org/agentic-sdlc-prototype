@@ -118,6 +118,11 @@ after the environments, App installation, label, and permissions are ready.
 The editor may show unknown-context warnings for the variables and environments
 until those GitHub settings exist.
 
+First intake requires an `issues:labeled` event sent by a human with current
+write access. Schedules and manual dispatches reconcile durable state but do not
+create a lifecycle from a pre-existing label. If an issue was labeled while the
+controller was disabled, remove the label and have a writer reapply it.
+
 ## 5. Run a Bounded Pilot
 
 Use a small change with explicit acceptance criteria in an allowed application
@@ -149,6 +154,11 @@ be run manually from the Actions tab, optionally for one issue.
 
 - A lost dispatch is rediscovered by job identity, actor, and workflow revision,
   then retried within policy if no run appears.
+- A transient `404`, `408`, `429`, rate-limited `403`, or `5xx` while retrieving
+  a completed worker artifact, or a successful listing where that artifact is
+  not visible yet, preserves the registered job for another reconciliation. If
+  retrieval remains unavailable past the job timeout, it consumes one
+  infrastructure failure.
 - A transient failure after a branch write can recover the matching commit.
   Do not manually rewrite the state file to work around a failed run.
 - A failed scanner or test produces repair feedback; a missing or malformed

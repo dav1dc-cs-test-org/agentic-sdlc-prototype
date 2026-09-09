@@ -57,6 +57,9 @@ test('secret findings and malformed scanner output block the gate', () => {
 
 test('the test runner executes real tests and measures their coverage', () => {
   const directory = mkdtempSync(join(tmpdir(), 'sdlc-tests-'));
+  const sensitive = ['GH_TOKEN', 'GITHUB_TOKEN', 'SDLC_APP_PRIVATE_KEY', 'NODE_OPTIONS', 'NODE_TEST_CONTEXT'];
+  const previous = new Map(sensitive.map(name => [name, process.env[name]]));
+  for (const name of sensitive) process.env[name] = `sentinel-${name}`;
   try {
     mkdirSync(join(directory, 'src'));
     mkdirSync(join(directory, 'test'));
@@ -64,12 +67,21 @@ test('the test runner executes real tests and measures their coverage', () => {
     writeFileSync(join(directory, 'tsconfig.json'), JSON.stringify({ compilerOptions: { allowJs: true, noEmit: true }, include: ['src'] }));
     writeFileSync(join(directory, 'src/add.js'), 'export const add = (first, second) => first + second;\n');
     writeFileSync(join(directory, 'test/add.test.js'),
-      'import assert from "node:assert/strict"; import test from "node:test"; import { add } from "../src/add.js"; test("adds", () => assert.equal(add(2, 3), 5));\n');
+      'import assert from "node:assert/strict"; import test from "node:test"; import { add } from "../src/add.js"; ' +
+      `for (const name of ${JSON.stringify(sensitive)}) assert.notEqual(process.env[name], "sentinel-" + name); ` +
+      'for (const name of ["GH_TOKEN", "GITHUB_TOKEN", "SDLC_APP_PRIVATE_KEY", "NODE_OPTIONS"]) assert.equal(process.env[name], undefined); ' +
+      'assert.ok(process.env.PATH); test("adds", () => assert.equal(add(2, 3), 5));\n');
     const fixturePolicy = { ...policy, testPaths: ['test/*.test.js'], sourcePaths: ['src/*.js'] };
     const measured = runTestSuite(directory, fixturePolicy, join(directory, 'coverage'));
     assert.equal(measured.total.lines.pct, 100);
     writeFileSync(join(directory, 'test/add.test.js'), 'throw new Error("regression");\n');
     assert.throws(() => runTestSuite(directory, fixturePolicy, join(directory, 'failed')), /execution failed/);
     assert.throws(() => runTestSuite(directory, { ...fixturePolicy, testPaths: ['missing/*'] }, join(directory, 'empty')), /No tests/);
-  } finally { rmSync(directory, { recursive: true, force: true }); }
+  } finally {
+    for (const [name, value] of previous) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

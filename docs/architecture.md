@@ -112,9 +112,9 @@ checks described in [Worker Handoff](#worker-handoff).
 ```mermaid
 flowchart TD
     ProcIntake["Open issue carrying agentic-SDLC"]
-    ProcAuthorize["Latest labeler is a human repository writer"]
+    ProcAuthorize["Labeled-event sender is a human repository writer"]
     ProcIgnore["Ignore unauthorized intake"]
-    ProcInitialize["Snapshot request and default-branch revision"]
+    ProcInitialize["Bind event request snapshot and default-branch revision"]
     subgraph ProcPlanning["Research and human approval"]
         ProcResearch["researching: inspect context and propose plan"]
         ProcPlan["Version and hash the accepted plan proposal"]
@@ -216,7 +216,7 @@ sequenceDiagram
 
   ApHuman->>ApIssue: Describe the feature and have a writer apply the label
   ApIssue-)ApControl: Issue event
-  ApControl->>ApControl: Verify intake and snapshot trusted revision
+  ApControl->>ApControl: Verify label-event sender and bind its issue snapshot
   ApControl->>ApState: Persist researching and registered research job
   ApControl-)ApWorker: Dispatch the registered job
   ApWorker-->>ApControl: Artifact and completion event through GitHub
@@ -253,7 +253,10 @@ trusted intake, even if they are not a repository writer. Writers may also
 approve. Commands from other users are ignored; valid authors receive rejection
 feedback for invalid state or stale versions.
 
-A revision snapshots the current issue and default branch, invalidates the
+A first lifecycle can only be created from an authorized human label event, not
+from a later schedule or manual reconciliation. If the issue changes after that
+event, the event snapshot remains authoritative and execution blocks before a
+worker is dispatched. A revision snapshots the current issue and default branch, invalidates the
 active job, clears approval and evidence, retires existing tasks as not planned,
 and chooses a new versioned feature branch. Older branches are retained.
 An edited issue or changed default branch requires replanning before execution
@@ -452,6 +455,10 @@ flowchart TD
 - **Infrastructure failures:** two consecutive failures block the lifecycle.
   Successful results reset this counter. A missing or malformed scanner report
   is not a clean scan.
+- **Artifact retrieval:** transient `404`, `408`, `429`, rate-limited `403`, and
+  `5xx` responses, plus an empty result-artifact listing, retain the completed
+  registered job for retry until its job timeout. Persistent retrieval failure
+  then consumes one infrastructure failure.
 - **Repair findings:** accepted `changes_requested` after decomposition return
   to coding, with two automatic repair rounds. The same outcome from research
   or decomposition counts as a failed stage instead.
@@ -467,9 +474,10 @@ flowchart TD
   fail instead of silently overwriting another checkpoint. A future controller
   run reloads state; GitHub API calls and state writes are not one transaction.
 
-The schedule reconciles every 10 minutes and can recover events coalesced by
-Actions concurrency. Manual dispatch can reconcile one issue or all known
-lifecycles. Turning `SDLC_ENABLED` off prevents new starts and transitions, but
+The schedule reconciles every 10 minutes and can recover established lifecycles
+after events are coalesced by Actions concurrency. Initial lifecycle creation
+still requires a live authorized label event. Manual dispatch can reconcile one
+issue or all known lifecycles. Turning `SDLC_ENABLED` off prevents new starts and transitions, but
 already-running jobs must also be cancelled for an immediate emergency stop.
 
 Once `pr_open` is reached, normal PR review owns further interaction. The
@@ -613,10 +621,17 @@ Candidate tests run in separate jobs without publishing credentials.
 
 File policy is enforced outside the model: only coding and testing may propose
 changes, and testing may only modify test paths. Protected automation paths,
-baseline tests, unsafe paths, symlinks, binary data, oversized changes, and
-conflicting branch history are rejected. Worker role instructions provide
+baseline tests, unsafe paths, case-colliding path segments, symlinks, binary
+data, oversized changes, and conflicting branch history are rejected. Worker role instructions provide
 behavioral guidance; merely reading a role profile does not create a separate
 operating-system permission boundary between roles.
+
+Compiler-generated agent post-processing has no issue, content, pull-request,
+check, deployment, package, or security-event write permission. Its isolated
+`actions: write` grant is used only by pinned framework code for the daily
+AI-credit cache; agent-selected safe outputs cannot use it for repository
+mutation. Plan and evidence Markdown is treated as untrusted and issue-closing
+keywords are neutralized before the controller builds the final PR.
 
 The current prototype does not implement parallel coding integration, automatic
 rebasing, cross-repository changes, deployment, automatic merging, or a Projects

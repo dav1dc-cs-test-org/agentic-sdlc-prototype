@@ -61,6 +61,11 @@ tools:
     toolsets: [repos, issues, pull_requests, actions]
 safe-outputs:
   report-failure-as-issue: false
+  report-failed-jobs: false
+  missing-tool: false
+  missing-data: false
+  report-incomplete:
+    create-issue: false
   upload-artifact:
     allowed-paths: [.sdlc-output/result.json]
     max-uploads: 1

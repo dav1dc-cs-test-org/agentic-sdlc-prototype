@@ -50,6 +50,12 @@ preserving the previous branch and state history.
 5. Create a small issue with clear acceptance criteria, then have a repository
   writer apply the `agentic-SDLC` label.
 
+Initial state is created only from that authorized human `labeled` event. The
+controller binds the request to the event's title and body; scheduled and manual
+reconciliation cannot authorize an issue that was already labeled. If the label
+was applied while automation was disabled, remove it and have a writer reapply
+it after enabling the controller.
+
 The first agent posts a versioned plan on the issue and stops. The requester or
 a repository writer can approve that exact version with a new comment:
 
@@ -123,8 +129,9 @@ compiler upgrades require deliberate review and validation.
 
 Authoritative JSON state is stored on `sdlc-state`. Writes use the previous
 content SHA to reject conflicting updates. The controller is serialized;
-scheduled reconciliation recovers events coalesced by Actions concurrency or
-missed callbacks. Jobs are persisted before dispatch and accepted only from the
+scheduled reconciliation recovers established lifecycles after events are
+coalesced by Actions concurrency or callbacks are missed. Initial intake still
+requires a live authorized label event. Jobs are persisted before dispatch and accepted only from the
 configured App, trusted workflow revision, expected job, and exact source SHA.
 
 Workers receive read-only repository credentials. They return reports and text
@@ -138,6 +145,9 @@ new deterministic scans and a new security-agent review before validation and
 final review. The final PR includes the approved plan, task context, workflow
 evidence, and an advisory `COMMENT` review. `SDLC / Complete` is attached to the
 reviewed commit, not to a mutable branch name.
+Agent-authored plan and evidence text has GitHub closing keywords neutralized
+before publication, so only the controller-authored epic reference can close an
+issue when the PR merges.
 
 ## Bounds and Limitations
 

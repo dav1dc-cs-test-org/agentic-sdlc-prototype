@@ -51,6 +51,36 @@ export const policySchema = z.object({
 }).strict();
 export type Policy = z.infer<typeof policySchema>;
 
+const intakeEventSchema = z.object({
+  action: z.literal('labeled'),
+  label: z.object({ name: z.string() }).passthrough(),
+  sender: z.object({ login: text.max(100), type: z.literal('User') }).passthrough(),
+  issue: z.object({
+    number: numberSchema, title: text.max(256), body: z.string().max(65536).nullable(),
+    user: z.object({ login: text.max(100) }).passthrough(),
+  }).passthrough(),
+}).passthrough();
+
+export interface Intake {
+  issueNumber: number;
+  actor: string;
+  requester: string;
+  title: string;
+  body: string;
+}
+
+export function parseIntakeEvent(input: unknown, label: string): Intake | undefined {
+  const parsed = intakeEventSchema.safeParse(input);
+  if (!parsed.success || parsed.data.label.name !== label) return undefined;
+  return {
+    issueNumber: parsed.data.issue.number,
+    actor: parsed.data.sender.login,
+    requester: parsed.data.issue.user.login,
+    title: parsed.data.issue.title,
+    body: parsed.data.issue.body ?? '',
+  };
+}
+
 const jobSchema = z.object({
   id: z.string().regex(/^\d+-\d+$/), stage: stageSchema,
   inputSha: shaSchema, controlSha: shaSchema, planHash: hashSchema.nullable(),

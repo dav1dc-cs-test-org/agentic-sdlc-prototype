@@ -10,6 +10,7 @@ export function validateChanges(changes: Change[], stage: Stage, policy: Policy)
   if (!['code', 'test'].includes(stage) && changes.length) throw new Error('Read-only stage proposed changes');
   if (changes.length > policy.maxFiles) throw new Error('Changed-file budget exceeded');
   const seen = new Set<string>();
+  const prefixes = new Map<string, string>();
   let bytes = 0;
   for (const change of changes) {
     const path = change.path;
@@ -19,7 +20,18 @@ export function validateChanges(changes: Change[], stage: Stage, policy: Policy)
     }
     const normalized = path.toLowerCase();
     if (seen.has(normalized)) throw new Error('Duplicate or case-colliding file paths');
+    if ([...seen].some(previous => normalized.startsWith(`${previous}/`) || previous.startsWith(`${normalized}/`))) {
+      throw new Error('Conflicting file and directory changes');
+    }
     seen.add(normalized);
+    const segments = path.split('/');
+    for (let depth = 1; depth <= segments.length; depth += 1) {
+      const prefix = segments.slice(0, depth).join('/');
+      const folded = prefix.toLowerCase();
+      const previous = prefixes.get(folded);
+      if (previous && previous !== prefix) throw new Error('Case-colliding directory paths');
+      prefixes.set(folded, prefix);
+    }
     if (normalized.startsWith('.github/') || normalized.startsWith('.sdlc') ||
         /(^|\/)agents\.md$/.test(normalized) ||
         policy.protectedPaths.some(pattern => posix.matchesGlob(normalized, pattern.toLowerCase()))) {

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { Controller, type Comment, type Platform, type RecordState, type Run } from '../src/controller.ts';
-import { lifecycleSchema, policySchema, type Change, type Report } from '../src/contracts.ts';
+import { Controller, RetryablePlatformError, type Comment, type Platform, type RecordState, type Run } from '../src/controller.ts';
+import { lifecycleSchema, policySchema, type Change, type Intake, type Report } from '../src/contracts.ts';
 import type { Job, Lifecycle, Task } from '../src/lifecycle.ts';
 
 const policy = policySchema.parse(JSON.parse(readFileSync('.github/sdlc/policy.json', 'utf8')));
@@ -15,20 +15,21 @@ class FakePlatform implements Platform {
   messages: Comment[] = [];
   outputs = new Map<string, string>();
   dispatched: Job[] = [];
+  dispatchFailure?: unknown;
   runs = new Map<string, Run>();
   reports = new Map<number, Report>();
+  reportFailure?: unknown;
   cancelled: number[] = [];
+  cancelFailure?: unknown;
   changed = 0;
   published = 0;
   closedTasks = 0;
   retired: number[] = [];
   baselineSha = baseSha;
   disposition: 'open' | 'closed' | 'merged' = 'open';
-  authorized = true;
   async issue() { return this.input; }
   async comments() { return this.messages; }
   async canWrite(actor: string) { return actor === 'maintainer'; }
-  async authorizedIntake() { return this.authorized; }
   async baseline() { return { branch: 'main', sha: this.baselineSha }; }
   // Mirrors GitHub.save/GitHub.load exactly: raw JSON on write, schema-validated on read.
   async load() {
@@ -53,10 +54,19 @@ class FakePlatform implements Platform {
   async task(_state: Lifecycle, task: Task) { return task.id === 'first' ? 124 : 125; }
   linked = 0;
   async linkTasks() { this.linked += 1; }
-  async dispatch(job: Job) { this.dispatched.push(structuredClone(job)); }
+  async dispatch(job: Job) {
+    this.dispatched.push(structuredClone(job));
+    if (this.dispatchFailure) throw this.dispatchFailure;
+  }
   async findRun(job: Job) { return this.runs.get(job.id); }
-  async cancelRun(runId: number) { this.cancelled.push(runId); }
-  async report(run: Run) { return this.reports.get(run.id)!; }
+  async cancelRun(runId: number) {
+    this.cancelled.push(runId);
+    if (this.cancelFailure) throw this.cancelFailure;
+  }
+  async report(run: Run) {
+    if (this.reportFailure) throw this.reportFailure;
+    return this.reports.get(run.id)!;
+  }
   async applyChanges(_state: Lifecycle, _job: Job, _changes: Change[]) {
     this.changed += 1;
     return this.changed.toString(16).padStart(40, '0');
@@ -76,10 +86,15 @@ class FakePlatform implements Platform {
   }
 }
 
+function intake(platform: FakePlatform, actor = 'maintainer'): Intake {
+  return { issueNumber: platform.input.number, actor, requester: platform.input.author,
+    title: platform.input.title, body: platform.input.body };
+}
+
 async function planned() {
   const platform = new FakePlatform();
   const controller = new Controller(platform, policy);
-  await controller.tick(123);
+  await controller.tick(123, intake(platform));
   platform.finish({ plan: 'Implement the feature with regression coverage.' });
   await controller.tick(123);
   return { platform, controller };
@@ -100,13 +115,24 @@ async function coding() {
 test('label intake is authorized and duplicate events do not duplicate dispatch', async () => {
   const platform = new FakePlatform();
   const controller = new Controller(platform, policy);
-  platform.authorized = false;
   await controller.tick(123);
   assert.equal(platform.stored, undefined);
-  platform.authorized = true;
-  await controller.tick(123);
+  await controller.tick(123, intake(platform, 'stranger'));
+  assert.equal(platform.stored, undefined);
+  await controller.tick(123, intake(platform));
   await controller.tick(123);
   assert.equal(platform.dispatched.length, 1);
+});
+
+test('an issue edit after labeling cannot replace the authorized intake snapshot', async () => {
+  const platform = new FakePlatform();
+  const controller = new Controller(platform, policy);
+  const authorized = intake(platform);
+  platform.input.body = 'Substituted scope';
+  await controller.tick(123, authorized);
+  assert.equal(platform.stored!.state.request, 'Feature\n\nImplement a feature');
+  assert.equal(platform.stored!.state.phase, 'blocked');
+  assert.equal(platform.dispatched.length, 0);
 });
 
 test('research stops for approval and only explicit authorized approval resumes', async () => {
@@ -196,6 +222,39 @@ test('security findings return to coding with a bounded repair loop', async () =
   assert.equal(platform.published, 0);
 });
 
+test('late review findings invalidate evidence and force every gate after a no-change repair', async () => {
+  const { platform, controller } = await coding();
+  platform.finish({ changes: [{ path: 'feature.txt', content: 'First' }] });
+  await controller.tick(123);
+  platform.finish({ changes: [{ path: 'feature.txt', content: 'Complete' }] });
+  await controller.tick(123);
+  for (const stage of ['scan', 'security', 'test', 'validate']) {
+    assert.equal(platform.stored!.state.job!.stage, stage);
+    platform.finish();
+    await controller.tick(123);
+  }
+  assert.equal(platform.stored!.state.job!.stage, 'review');
+  assert.deepEqual(platform.stored!.state.evidence.map(item => item.stage), ['scan', 'security', 'test', 'validate']);
+  platform.finish({ outcome: 'changes_requested', summary: 'Repair the late review finding' });
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.job!.stage, 'code');
+  assert.deepEqual(platform.stored!.state.evidence, []);
+  assert.equal(platform.published, 0);
+
+  platform.finish();
+  await controller.tick(123);
+  const rerun: string[] = [];
+  for (const stage of ['scan', 'security', 'test', 'validate', 'review']) {
+    assert.equal(platform.stored!.state.job!.stage, stage);
+    rerun.push(platform.stored!.state.job!.stage);
+    platform.finish();
+    await controller.tick(123);
+    if (stage !== 'review') assert.equal(platform.published, 0);
+  }
+  assert.deepEqual(rerun, ['scan', 'security', 'test', 'validate', 'review']);
+  assert.equal(platform.published, 1);
+});
+
 test('pause discards in-flight results; only a maintainer can resume', async () => {
   const { platform, controller } = await coding();
   const job = platform.stored!.state.job!;
@@ -260,7 +319,7 @@ test('lost dispatches reuse their job identity and stop after bounded attempts',
   const platform = new FakePlatform();
   let time = new Date('2026-09-08T12:00:00Z');
   const controller = new Controller(platform, policy, () => time);
-  await controller.tick(123);
+  await controller.tick(123, intake(platform));
   const first = platform.stored!.state.job!.id;
   time = new Date(time.getTime() + policy.dispatchGraceMinutes * 60_000 + 1);
   await controller.tick(123);
@@ -277,11 +336,30 @@ test('lost dispatches reuse their job identity and stop after bounded attempts',
   assert.equal(platform.dispatched.length, 4);
 });
 
+test('a lost dispatch response recovers the remote run without dispatching again', async () => {
+  const platform = new FakePlatform();
+  const controller = new Controller(platform, policy);
+  const failure = Object.assign(new Error('Dispatch response lost'), { status: 503 });
+  platform.dispatchFailure = failure;
+  await assert.rejects(controller.tick(123, intake(platform)), error => error === failure);
+  const job = platform.stored!.state.job!;
+  assert.ok(job.dispatchedAt);
+  assert.equal(platform.dispatched.length, 1);
+
+  platform.dispatchFailure = undefined;
+  platform.runs.set(job.id, { id: 42, status: 'in_progress', conclusion: null,
+    url: 'https://github.com/owner/repo/actions/runs/42' });
+  await controller.tick(123);
+  assert.equal(platform.dispatched.length, 1);
+  assert.equal(platform.stored!.state.job!.id, job.id);
+  assert.equal(platform.stored!.state.job!.runId, 42);
+});
+
 test('timed-out workers are cancelled and replaced within the infrastructure budget', async () => {
   const platform = new FakePlatform();
   let time = new Date('2026-09-08T12:00:00Z');
   const controller = new Controller(platform, policy, () => time);
-  await controller.tick(123);
+  await controller.tick(123, intake(platform));
   const first = platform.stored!.state.job!.id;
   platform.runs.set(first, { id: 20, status: 'in_progress', conclusion: null, url: 'https://github.com/run/20' });
   time = new Date(time.getTime() + policy.jobTimeoutMinutes * 60_000 + 1);
@@ -291,11 +369,75 @@ test('timed-out workers are cancelled and replaced within the infrastructure bud
   assert.equal(platform.stored!.state.failures, 1);
 });
 
+test('failed cancellation cannot revive a durably interrupted job', async () => {
+  const { platform, controller } = await coding();
+  const job = platform.stored!.state.job!;
+  platform.runs.set(job.id, { id: 20, status: 'in_progress', conclusion: null,
+    url: 'https://github.com/owner/repo/actions/runs/20' });
+  const failure = Object.assign(new Error('Cancellation unavailable'), { status: 503 });
+  platform.cancelFailure = failure;
+  platform.reply('/sdlc pause');
+  await assert.rejects(controller.tick(123), error => error === failure);
+  assert.equal(platform.stored!.state.phase, 'paused');
+  assert.equal(platform.stored!.state.job, undefined);
+  assert.deepEqual(platform.cancelled, [20]);
+
+  platform.cancelFailure = undefined;
+  platform.runs.set(job.id, { id: 20, status: 'completed', conclusion: 'success',
+    url: 'https://github.com/owner/repo/actions/runs/20' });
+  const dispatches = platform.dispatched.length;
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.phase, 'paused');
+  assert.equal(platform.stored!.state.job, undefined);
+  assert.equal(platform.dispatched.length, dispatches);
+});
+
+test('transient artifact errors preserve the completed job for a later retry', async () => {
+  const failures = [
+    new RetryablePlatformError('Artifact not visible yet'),
+    Object.assign(new Error('Artifact not ready'), { status: 404 }),
+    Object.assign(new Error('Request timeout'), { status: 408 }),
+    Object.assign(new Error('Rate limited'), { status: 429 }),
+    Object.assign(new Error('Secondary rate limit'), { status: 403,
+      response: { headers: { 'retry-after': '60' } } }),
+    Object.assign(new Error('Artifact service unavailable'), { status: 503 }),
+    Object.assign(new Error('Connection reset'), { code: 'ECONNRESET' }),
+  ];
+  for (const failure of failures) {
+    const platform = new FakePlatform();
+    const controller = new Controller(platform, policy);
+    await controller.tick(123, intake(platform));
+    platform.finish({ plan: 'Implement the feature.' });
+    const jobId = platform.stored!.state.job!.id;
+    platform.reportFailure = failure;
+    await assert.rejects(controller.tick(123), error => error === failure);
+    assert.equal(platform.stored!.state.job!.id, jobId);
+    assert.equal(platform.stored!.state.failures, 0);
+    platform.reportFailure = undefined;
+    await controller.tick(123);
+    assert.equal(platform.stored!.state.phase, 'awaiting_approval');
+  }
+});
+
+test('persistent artifact errors consume one infrastructure failure after the job timeout', async () => {
+  const platform = new FakePlatform();
+  let time = new Date('2026-09-08T12:00:00Z');
+  const controller = new Controller(platform, policy, () => time);
+  await controller.tick(123, intake(platform));
+  platform.finish({ plan: 'Implement the feature.' });
+  const jobId = platform.stored!.state.job!.id;
+  platform.reportFailure = Object.assign(new Error('Artifact service unavailable'), { status: 503 });
+  time = new Date(time.getTime() + policy.jobTimeoutMinutes * 60_000 + 1);
+  await controller.tick(123);
+  assert.notEqual(platform.stored!.state.job!.id, jobId);
+  assert.equal(platform.stored!.state.failures, 1);
+});
+
 test('surrounding whitespace in the issue and plan survives persistence', async () => {
   const platform = new FakePlatform();
   const controller = new Controller(platform, policy);
   platform.input.body = 'Implement a feature\n';
-  await controller.tick(123);
+  await controller.tick(123, intake(platform));
   platform.finish({ plan: '## Plan\n\nImplement the feature with regression coverage.\n' });
   await controller.tick(123);
   assert.equal(platform.stored!.state.phase, 'awaiting_approval');

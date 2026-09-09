@@ -4,7 +4,8 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { Octokit } from '@octokit/rest';
 import { strToU8, zipSync } from 'fflate';
-import { GitHub, decodeReportArchive } from '../src/github.ts';
+import { GitHub, decodeReportArchive, neutralizeClosingKeywords } from '../src/github.ts';
+import { RetryablePlatformError } from '../src/controller.ts';
 import { policySchema } from '../src/contracts.ts';
 import { createLifecycle, startJob } from '../src/lifecycle.ts';
 import { approvePlan, digest, makePlan } from '../src/domain.ts';
@@ -35,12 +36,36 @@ function active() {
   return { state, job };
 }
 
+function publishable() {
+  const { state } = active();
+  state.phase = 'publishing';
+  state.job = undefined;
+  state.headSha = newSha;
+  state.tasks = [{ id: 'feature', title: 'Feature', description: 'Feature', acceptance: ['Works'], dependsOn: [], completed: true }];
+  state.evidence = ['scan', 'security', 'test', 'validate', 'review'].map(stage => ({
+    stage: stage as 'scan' | 'security' | 'test' | 'validate' | 'review', sha: newSha,
+    jobId: `123-${stage}`, runId: 1, summary: 'Verified',
+  }));
+  return state;
+}
+
 test('artifact decoding accepts only the bounded result file and a strict schema', () => {
   const report = { jobId: '123-1', inputSha: baseSha, outcome: 'pass', summary: 'Done', changes: [] };
   assert.deepEqual(decodeReportArchive(zipSync({ 'result.json': strToU8(JSON.stringify(report)) })), report);
   assert.throws(() => decodeReportArchive(zipSync({ '../result.json': strToU8('{}') })), /Missing/);
   assert.throws(() => decodeReportArchive(new Uint8Array(2_000_001)), /size/);
   assert.throws(() => decodeReportArchive(zipSync({ 'result.json': strToU8('{"outcome":"pass"}') })));
+});
+
+test('untrusted Markdown cannot preserve issue-closing directives', () => {
+  const sanitized = neutralizeClosingKeywords([
+    'Closes #1', '\\`Fixes owner/repo#2', '`Resolved` #3', '`Closes #4`',
+    '`Closes #5', 'resolve https://github.com/owner/repo/issues/6', 'Fixed\n#7', 'Discusses #8',
+  ].join('\n'));
+  assert.equal(sanitized, [
+    'Closes issue #1', '\\`Fixes issue owner/repo#2', '`Resolved` #3', '`Closes issue #4`',
+    '`Closes issue #5', 'resolve issue https://github.com/owner/repo/issues/6', 'Fixed issue\n#7', 'Discusses #8',
+  ].join('\n'));
 });
 
 test('state writes carry the prior content SHA for compare-and-swap', async () => {
@@ -79,11 +104,43 @@ test('failed check workflows need a successful trusted result job before their a
   await assert.rejects(github.report({ id: 1, status: 'completed', conclusion: 'failure', url: 'https://github.com/run/1' }, job), /trusted check-result/);
 });
 
+test('completed runs remain retryable while their result artifact is not yet visible', async () => {
+  const { job } = active();
+  const github = new GitHub('owner/repo', policy, 'sdlc[bot]', api(() => ({ total_count: 0, artifacts: [] })));
+  await assert.rejects(github.report({ id: 1, status: 'completed', conclusion: 'success', url: 'https://github.com/run/1' }, job),
+    error => error instanceof RetryablePlatformError);
+});
+
+test('artifact discovery consumes the complete paginated result set', async () => {
+  const { job } = active();
+  const listArtifacts = () => undefined;
+  const report = { jobId: job.id, inputSha: job.inputSha, outcome: 'pass', summary: 'Done', changes: [] };
+  let downloads = 0;
+  let artifacts = [{ id: 9, name: 'sdlc-result', expired: false, size_in_bytes: 100 }];
+  const github = new GitHub('owner/repo', policy, 'sdlc[bot]', {
+    actions: {
+      listWorkflowRunArtifacts: listArtifacts,
+      downloadArtifact: async () => { downloads += 1; return { data: zipSync({ 'result.json': strToU8(JSON.stringify(report)) }) }; },
+    },
+    paginate: async (route: unknown) => {
+      assert.equal(route, listArtifacts);
+      return artifacts;
+    },
+  } as unknown as Octokit);
+  assert.deepEqual(await github.report({ id: 1, status: 'completed', conclusion: 'success', url: 'https://github.com/run/1' }, job), report);
+  assert.equal(downloads, 1);
+  artifacts = [...artifacts, { id: 10, name: 'sdlc-result', expired: false, size_in_bytes: 100 }];
+  await assert.rejects(github.report({ id: 1, status: 'completed', conclusion: 'success', url: 'https://github.com/run/1' }, job),
+    /Duplicate/);
+  assert.equal(downloads, 1);
+});
+
 test('a commit already published before a crash is recovered without writing again', async () => {
   const { state, job } = active();
   const changes = [{ path: 'feature.txt', content: 'Feature' }];
   const blob = createHash('sha1').update('blob 7\0Feature').digest('hex');
-  let contentSha = blob;
+  const unchanged = { path: 'unchanged.txt', mode: '100644', type: 'blob', sha: 'f'.repeat(40) };
+  let published = [{ path: 'feature.txt', mode: '100644', type: 'blob', sha: blob }, unchanged];
   const github = new GitHub('owner/repo', policy, 'sdlc[bot]', api((method, path) => {
     assert.equal(method, 'GET');
     if (path.includes('/git/ref/')) return { object: { sha: newSha } };
@@ -91,13 +148,43 @@ test('a commit already published before a crash is recovered without writing aga
       message: `SDLC ${job.id} ${digest(changes)}`, parents: [{ sha: baseSha }],
       tree: { sha: path.endsWith(newSha) ? 'd'.repeat(40) : 'c'.repeat(40) },
     };
-    return { truncated: false, tree: path.endsWith('d'.repeat(40)) ? [
-      { path: 'feature.txt', mode: '100644', type: 'blob', sha: contentSha },
-    ] : [] };
+    return { truncated: false, tree: path.endsWith('d'.repeat(40)) ? published : [unchanged] };
   }));
   assert.equal(await github.applyChanges(state, job, changes), newSha);
-  contentSha = 'e'.repeat(40);
-  await assert.rejects(github.applyChanges(state, job, changes), /Published tree/);
+  for (const divergent of [
+    [{ path: 'feature.txt', mode: '100644', type: 'blob', sha: 'e'.repeat(40) }, unchanged],
+    [{ path: 'feature.txt', mode: '100644', type: 'blob', sha: blob },
+      unchanged, { path: 'extra.txt', mode: '100644', type: 'blob', sha: 'e'.repeat(40) }],
+    [{ path: 'feature.txt', mode: '100644', type: 'blob', sha: blob }],
+    [{ path: 'feature.txt', mode: '100644', type: 'blob', sha: blob },
+      { ...unchanged, sha: 'e'.repeat(40) }],
+    [{ path: 'feature.txt', mode: '100755', type: 'blob', sha: blob }, unchanged],
+  ]) {
+    published = divergent;
+    await assert.rejects(github.applyChanges(state, job, changes), /Published tree/);
+  }
+});
+
+test('publisher refuses to update a working branch that moves after commit creation', async () => {
+  const { state, job } = active();
+  let refReads = 0;
+  let updates = 0;
+  const github = new GitHub('owner/repo', policy, 'sdlc[bot]', api((method, path) => {
+    if (path.includes('/git/ref/')) {
+      refReads += 1;
+      return { object: { sha: refReads === 1 ? baseSha : newSha } };
+    }
+    if (method === 'GET' && path.includes('/git/commits/')) return { tree: { sha: 'c'.repeat(40) } };
+    if (method === 'GET' && path.includes('/git/trees/')) return { truncated: false, tree: [] };
+    if (method === 'POST' && path.endsWith('/git/trees')) return { sha: 'd'.repeat(40) };
+    if (method === 'POST' && path.endsWith('/git/commits')) return { sha: 'e'.repeat(40) };
+    if (method === 'PATCH') updates += 1;
+    return {};
+  }));
+  await assert.rejects(github.applyChanges(state, job, [{ path: 'feature.txt', content: 'Feature' }]),
+    /Working branch moved/);
+  assert.equal(refReads, 2);
+  assert.equal(updates, 0);
 });
 
 test('publisher preserves baseline tests and refuses symlink ancestors', async () => {
@@ -114,6 +201,22 @@ test('publisher preserves baseline tests and refuses symlink ancestors', async (
     }));
     await assert.rejects(github.applyChanges(state, job, [{ path, content: 'Changed' }]), /immutable|ancestor/);
   }
+});
+
+test('publisher rejects additions whose ancestor casing differs from the source tree', async () => {
+  const { state, job } = active();
+  const github = new GitHub('owner/repo', policy, 'sdlc[bot]', api((method, route) => {
+    assert.equal(method, 'GET');
+    if (route.includes('/git/ref/')) return { object: { sha: baseSha } };
+    if (route.includes('/git/commits/')) return { tree: { sha: 'c'.repeat(40) } };
+    return { truncated: false, tree: [
+      { path: 'lib', type: 'tree', mode: '040000', sha: baseSha },
+      { path: 'lib/existing.txt', type: 'blob', mode: '100644', sha: baseSha },
+    ] };
+  }));
+  await assert.rejects(github.applyChanges(state, job, [
+    { path: 'Lib/new.txt', content: 'New' },
+  ]), /different casing/);
 });
 
 test('publisher applies a validated tree to only the working branch without force', async () => {
@@ -133,15 +236,102 @@ test('publisher applies a validated tree to only the working branch without forc
   assert.equal(writes[0]!.body.base_tree, 'c'.repeat(40));
 });
 
-test('final PR, advisory review, and commit check are idempotent and reference the reviewed SHA', async () => {
+test('paginated comments, task markers, and links prevent duplicate side effects', async () => {
   const { state } = active();
-  state.phase = 'publishing';
-  state.job = undefined;
-  state.headSha = newSha;
-  state.tasks = [{ id: 'feature', title: 'Feature', description: 'Feature', acceptance: ['Works'], dependsOn: [], completed: true }];
+  const dependency: typeof state.tasks[number] = {
+    id: 'first', title: 'First', description: 'First', acceptance: ['Works'], dependsOn: [], issueNumber: 124, completed: false,
+  };
+  const dependent: typeof state.tasks[number] = {
+    id: 'second', title: 'Second', description: 'Second', acceptance: ['Works'], dependsOn: ['first'], issueNumber: 125, completed: false,
+  };
+  state.tasks = [dependency, dependent];
+  const taskMarker = `<!-- sdlc:task:${state.issueNumber}:${state.plan!.hash}:${dependency.id} -->`;
+  const listComments = () => undefined;
+  const listForRepo = () => undefined;
+  let updates = 0;
+  let creates = 0;
+  let requests = 0;
+  const github = new GitHub('owner/repo', policy, 'sdlc[bot]', {
+    issues: {
+      listComments,
+      listForRepo,
+      updateComment: async () => { updates += 1; return { data: {} }; },
+      createComment: async () => { creates += 1; return { data: {} }; },
+      create: async () => { creates += 1; throw new Error('Task should have been reused'); },
+      get: async () => { throw new Error('Dependency should have been reused'); },
+    },
+    paginate: async (route: unknown) => {
+      if (route === listComments) return [{ id: 1, body: '<!-- sdlc:status -->\nOld',
+        user: { login: 'sdlc[bot]', type: 'Bot' }, created_at: '2026-09-08T12:00:00Z', updated_at: '2026-09-08T12:00:00Z' }];
+      if (route === listForRepo) return [{ id: 99, number: 124, body: `${taskMarker}\nTask`, user: { login: 'sdlc[bot]' } }];
+      if (String(route).endsWith('/sub_issues')) return [{ id: 99, number: 124 }];
+      if (String(route).endsWith('/dependencies/blocked_by')) return [{ number: 124 }];
+      throw new Error(`Unexpected pagination route: ${String(route)}`);
+    },
+    request: async () => { requests += 1; return { data: {} }; },
+  } as unknown as Octokit);
+  await github.comment(123, 'status', 'New');
+  assert.equal(await github.task(state, dependency), 124);
+  await github.linkTasks(state);
+  assert.equal(updates, 1);
+  assert.equal(creates, 0);
+  assert.equal(requests, 0);
+});
+
+test('publication inspects every PR page and reuses later owned side effects', async () => {
+  const state = publishable();
+  const listPulls = () => { throw new Error('Direct one-page PR lookup is forbidden'); };
+  const listReviews = () => undefined;
+  const listChecks = () => undefined;
+  let pullCreates = 0;
+  let reviewCreates = 0;
+  let checkCreates = 0;
+  const marker = `<!-- sdlc:feature:${state.issueNumber}:${state.plan!.hash} -->`;
+  const reviewMarker = `<!-- sdlc:review:${state.headSha} -->`;
+  const github = new GitHub('owner/repo', policy, 'sdlc[bot]', {
+    git: { getRef: async () => ({ data: { object: { sha: newSha } } }) },
+    pulls: {
+      list: listPulls,
+      create: async () => { pullCreates += 1; throw new Error('PR should have been reused'); },
+      listReviews,
+      createReview: async () => { reviewCreates += 1; return { data: {} }; },
+    },
+    checks: { listForRef: listChecks, create: async () => { checkCreates += 1; return { data: {} }; } },
+    paginate: async (route: unknown) => {
+      if (route === listPulls) return [{ number: 126, state: 'open', body: `${marker}\nExisting`, user: { login: 'sdlc[bot]' } }];
+      if (route === listReviews) return [{ body: `${reviewMarker}\nExisting`, user: { login: 'sdlc[bot]' } }];
+      if (route === listChecks) return [{ conclusion: 'success', app: { slug: 'sdlc' } }];
+      throw new Error('Unexpected pagination route');
+    },
+  } as unknown as Octokit);
+  assert.equal(await github.publish(state), 126);
+  assert.equal(pullCreates, 0);
+  assert.equal(reviewCreates, 0);
+  assert.equal(checkCreates, 0);
+});
+
+test('an unrelated pull request found by pagination blocks publication', async () => {
+  const state = publishable();
+  const listPulls = () => { throw new Error('Direct one-page PR lookup is forbidden'); };
+  const github = new GitHub('owner/repo', policy, 'sdlc[bot]', {
+    git: { getRef: async () => ({ data: { object: { sha: newSha } } }) },
+    pulls: { list: listPulls },
+    paginate: async (route: unknown) => {
+      assert.equal(route, listPulls);
+      return [{ number: 200, state: 'open', body: 'Unrelated', user: { login: 'someone' } }];
+    },
+  } as unknown as Octokit);
+  await assert.rejects(github.publish(state), /unrelated pull request/);
+});
+
+test('final PR, advisory review, and commit check are idempotent and reference the reviewed SHA', async () => {
+  const state = publishable();
+  state.plan = makePlan('Approved plan. Fixes #455.', 0);
+  state.approval = approvePlan({ phase: 'awaiting_approval', plan: state.plan, version: 1,
+    authorized: true, actor: 'requester', commentId: 1, at: '2026-09-08T12:00:00Z' });
   state.evidence = ['scan', 'security', 'test', 'validate', 'review'].map(stage => ({
     stage: stage as 'scan' | 'security' | 'test' | 'validate' | 'review', sha: newSha,
-    jobId: `123-${stage}`, runId: 1, summary: 'Verified',
+    jobId: `123-${stage}`, runId: 1, summary: 'Verified. Closes owner/repo#456.',
   }));
   const pulls: Record<string, unknown>[] = [];
   const reviews: Record<string, unknown>[] = [];
@@ -172,9 +362,13 @@ test('final PR, advisory review, and commit check are idempotent and reference t
   assert.equal(pulls[0]!.head, state.branch);
   assert.equal(pulls[0]!.base, 'main');
   assert.equal(pulls[0]!.draft, false);
+  assert.match(String(pulls[0]!.body), /Closes #123/);
+  assert.match(String(pulls[0]!.body), /Fixes issue #455/);
+  assert.match(String(pulls[0]!.body), /Closes issue owner\/repo#456/);
   assert.equal(reviews.length, 1);
   assert.equal(reviews[0]!.event, 'COMMENT');
   assert.equal(reviews[0]!.commit_id, newSha);
+  assert.match(String(reviews[0]!.body), /Closes issue owner\/repo#456/);
   assert.equal(checks.length, 1);
   assert.equal(checks[0]!.head_sha, newSha);
   pulls[0]!.state = 'closed';
@@ -195,18 +389,12 @@ test('state reads validate identity and reject corrupt or oversized data', async
   await assert.rejects(github.load(123), /Invalid state/);
 });
 
-test('intake authorization checks the latest labeler and live repository permission', async () => {
-  let actor = { login: 'maintainer', type: 'User' };
+test('repository write authorization checks live permission', async () => {
   let permission = 'write';
-  const github = new GitHub('owner/repo', policy, 'sdlc[bot]', api((_method, path) => {
-    if (path.endsWith('/events')) return [{ event: 'labeled', label: { name: 'agentic-SDLC' }, actor }];
-    return { permission };
-  }));
-  assert.equal(await github.authorizedIntake(123), true);
+  const github = new GitHub('owner/repo', policy, 'sdlc[bot]', api(() => ({ permission })));
+  assert.equal(await github.canWrite('maintainer'), true);
   permission = 'read';
-  assert.equal(await github.authorizedIntake(123), false);
-  actor = { login: 'sdlc[bot]', type: 'Bot' };
-  assert.equal(await github.authorizedIntake(123), false);
+  assert.equal(await github.canWrite('maintainer'), false);
 });
 
 test('only controller-owned comments are updated and edited commands are ignored', async () => {

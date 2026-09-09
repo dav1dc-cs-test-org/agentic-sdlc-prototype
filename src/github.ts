@@ -5,7 +5,7 @@ import { digest } from './domain.ts';
 import { isTestPath, validateChanges } from './changes.ts';
 import { lifecycleSchema, reportSchema, type Change, type Policy, type Report } from './contracts.ts';
 import { assertPublishable, type Job, type Lifecycle, type Task } from './lifecycle.ts';
-import type { Comment, Issue, Platform, RecordState, Run } from './controller.ts';
+import { RetryablePlatformError, type Comment, type Issue, type Platform, type RecordState, type Run } from './controller.ts';
 
 export function workerFile(job: Job): string {
   return ['scan', 'validate'].includes(job.stage) ? 'sdlc-checks.yml' : 'sdlc-agent.lock.yml';
@@ -24,6 +24,12 @@ export function decodeReportArchive(bytes: Uint8Array): Report {
 
 function missing(error: unknown): boolean {
   return error instanceof Error && 'status' in error && error.status === 404;
+}
+
+export function neutralizeClosingKeywords(markdown: string): string {
+  const reference = String.raw`(?:(?:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?#\d+|https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/issues\/\d+)`;
+  const keyword = String.raw`\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b(?=\s+${reference})`;
+  return markdown.replace(new RegExp(keyword, 'gi'), '$1 issue');
 }
 
 export class GitHub implements Platform {
@@ -77,13 +83,6 @@ export class GitHub implements Platform {
       const { data } = await this.api.repos.getCollaboratorPermissionLevel({ ...this.scope, username: actor });
       return ['write', 'maintain', 'admin'].includes(data.permission) || data.user?.permissions?.push === true;
     } catch (error) { if (missing(error)) return false; throw error; }
-  }
-
-  async authorizedIntake(number: number): Promise<boolean> {
-    const events = await this.api.paginate(this.api.issues.listEvents, { ...this.scope, issue_number: number, per_page: 100 });
-    const labels = events.filter(event => event.event === 'labeled' && 'label' in event && event.label?.name === this.policy.label);
-    const last = labels.at(-1);
-    return last?.actor?.type === 'User' && await this.canWrite(last.actor.login);
   }
 
   async baseline(): Promise<{ branch: string; sha: string }> {
@@ -231,13 +230,16 @@ export class GitHub implements Platform {
       const jobs = await this.api.paginate(this.api.actions.listJobsForWorkflowRun, {
         ...this.scope, run_id: run.id, filter: 'latest', per_page: 100,
       });
-      if (!jobs.some(item => item.name === 'SDLC Check Result' && item.conclusion === 'success')) {
+      const result = jobs.find(item => item.name === 'SDLC Check Result');
+      if (!result) throw new RetryablePlatformError('The trusted check-result job is not available yet');
+      if (result.conclusion !== 'success') {
         throw new Error('The trusted check-result job did not complete successfully');
       }
     }
     const artifacts = await this.api.paginate(this.api.actions.listWorkflowRunArtifacts, { ...this.scope, run_id: run.id, per_page: 100 });
     const matches = artifacts.filter(artifact => artifact.name === 'sdlc-result' && !artifact.expired);
-    if (matches.length !== 1 || matches[0]!.size_in_bytes > 2_000_000) throw new Error('Missing or oversized worker artifact');
+    if (!matches.length) throw new RetryablePlatformError('The worker artifact is not available yet');
+    if (matches.length !== 1 || matches[0]!.size_in_bytes > 2_000_000) throw new Error('Duplicate or oversized worker artifact');
     const response = await this.api.actions.downloadArtifact({ ...this.scope, artifact_id: matches[0]!.id, archive_format: 'zip' });
     return decodeReportArchive(new Uint8Array(response.data as ArrayBuffer));
   }
@@ -269,10 +271,10 @@ export class GitHub implements Platform {
     const source = await this.tree(job.inputSha);
     const sourceTree = source.files;
     const baselineTree = state.baseSha === job.inputSha ? sourceTree : (await this.tree(state.baseSha)).files;
-    const caseFolded = new Map<string, number>();
+    const caseFolded = new Map<string, string[]>();
     for (const path of sourceTree.keys()) {
       const folded = path.toLowerCase();
-      caseFolded.set(folded, (caseFolded.get(folded) ?? 0) + 1);
+      caseFolded.set(folded, [...(caseFolded.get(folded) ?? []), path]);
     }
     for (const change of changes) {
       const existing = sourceTree.get(change.path);
@@ -281,12 +283,14 @@ export class GitHub implements Platform {
       }
       if (isTestPath(change.path, this.policy) && baselineTree.has(change.path)) throw new Error('Existing baseline tests are immutable');
       if (change.content === null && !existing) throw new Error('Cannot delete a missing file');
-      if ((caseFolded.get(change.path.toLowerCase()) ?? 0) > (existing ? 1 : 0)) {
-        throw new Error('Existing path has different casing');
-      }
       const segments = change.path.split('/');
-      for (let depth = 1; depth < segments.length; depth += 1) {
-        const ancestor = sourceTree.get(segments.slice(0, depth).join('/'));
+      for (let depth = 1; depth <= segments.length; depth += 1) {
+        const prefix = segments.slice(0, depth).join('/');
+        if ((caseFolded.get(prefix.toLowerCase()) ?? []).some(path => path !== prefix)) {
+          throw new Error('Existing path has different casing');
+        }
+        if (depth === segments.length) continue;
+        const ancestor = sourceTree.get(prefix);
         if (ancestor && ancestor.type !== 'tree') throw new Error('Non-directory path ancestor');
       }
       if (changes.some(other => other !== change && change.path.startsWith(`${other.path}/`))) {
@@ -326,18 +330,19 @@ export class GitHub implements Platform {
     assertPublishable(state);
     if (await this.head(state.branch) !== state.headSha) throw new Error('Final branch differs from reviewed commit');
     const marker = `<!-- sdlc:feature:${state.issueNumber}:${state.plan!.hash} -->`;
-    const { data: existing } = await this.api.pulls.list({ ...this.scope, state: 'all',
+    const existing = await this.api.paginate(this.api.pulls.list, { ...this.scope, state: 'all',
       head: `${this.scope.owner}:${state.branch}`, base: state.baseBranch, per_page: 100 });
     const mine = existing.filter(candidate => candidate.user?.login === this.botLogin && candidate.body?.startsWith(marker));
     if (existing.length > mine.length) throw new Error('Working branch already has an unrelated pull request');
     let pullNumber = mine.find(candidate => candidate.state === 'open')?.number;
     if (!pullNumber && mine.length) throw new Error('The feature pull request for this plan was already closed');
     const evidence = state.evidence.map(item =>
-      `- **${item.stage}**: ${item.summary}\n  [Run ${item.runId}](https://github.com/${this.scope.owner}/${this.scope.repo}/actions/runs/${item.runId})`).join('\n');
+      `- **${item.stage}**: ${neutralizeClosingKeywords(item.summary)}\n  ` +
+      `[Run ${item.runId}](https://github.com/${this.scope.owner}/${this.scope.repo}/actions/runs/${item.runId})`).join('\n');
     if (!pullNumber) {
       pullNumber = (await this.api.pulls.create({ ...this.scope, head: state.branch, base: state.baseBranch, draft: false,
         title: `[Agentic SDLC] ${(await this.issue(state.issueNumber)).title}`.slice(0, 200),
-        body: `${marker}\nCloses #${state.issueNumber}\n\n## Approved plan\n\n${state.plan!.body}\n\n` +
+        body: `${marker}\nCloses #${state.issueNumber}\n\n## Approved plan\n\n${neutralizeClosingKeywords(state.plan!.body)}\n\n` +
           `Approved by @${state.approval!.actor}. Plan hash: \`${state.plan!.hash}\`.\n\n` +
           `Reviewed commit: \`${state.headSha}\`.\n\n## Evidence\n\n${evidence}\n\n` +
           'Agent reviews are advisory. A human must review and merge this PR. No automatic merge is enabled.',
@@ -347,7 +352,8 @@ export class GitHub implements Platform {
     const reviews = await this.api.paginate(this.api.pulls.listReviews, { ...this.scope, pull_number: pullNumber, per_page: 100 });
     if (!reviews.some(review => review.user?.login === this.botLogin && review.body.startsWith(reviewMarker))) {
       await this.api.pulls.createReview({ ...this.scope, pull_number: pullNumber, commit_id: state.headSha,
-        event: 'COMMENT', body: `${reviewMarker}\n## Independent agent review\n\n${state.evidence.find(item => item.stage === 'review')!.summary}` });
+        event: 'COMMENT', body: `${reviewMarker}\n## Independent agent review\n\n` +
+          neutralizeClosingKeywords(state.evidence.find(item => item.stage === 'review')!.summary) });
     }
     const checks = await this.api.paginate(this.api.checks.listForRef, { ...this.scope, ref: state.headSha, check_name: 'SDLC / Complete', per_page: 100 });
     if (!checks.some(check => `${check.app?.slug}[bot]` === this.botLogin && check.conclusion === 'success')) {

@@ -1,5 +1,5 @@
 import { approvePlan, makePlan, parseCommand, type Phase } from './domain.ts';
-import { reportSchema, type Change, type Policy, type Report } from './contracts.ts';
+import { reportSchema, type Change, type Intake, type Policy, type Report } from './contracts.ts';
 import { validateChanges } from './changes.ts';
 import {
   assertCurrentResult, assertPublishable, createLifecycle, nextTask, recordChange,
@@ -18,11 +18,14 @@ export interface Comment { id: number; body: string; actor: string; human: boole
 export interface Run { id: number; status: string; conclusion: string | null; url: string }
 export interface RecordState { state: Lifecycle; version?: string }
 
+export class RetryablePlatformError extends Error {
+  readonly retryable = true;
+}
+
 export interface Platform {
   issue(number: number): Promise<Issue>;
   comments(number: number): Promise<Comment[]>;
   canWrite(actor: string): Promise<boolean>;
-  authorizedIntake(number: number): Promise<boolean>;
   baseline(): Promise<{ branch: string; sha: string }>;
   load(number: number): Promise<RecordState | undefined>;
   save(record: RecordState): Promise<void>;
@@ -46,6 +49,20 @@ const stages: Partial<Record<Phase, Stage>> = {
 };
 const terminalPhases: Phase[] = ['cancelled', 'merged'];
 
+function transientPlatformError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const candidate = error as Error & { status?: unknown; code?: unknown; cause?: { code?: unknown };
+    retryable?: unknown; response?: { headers?: Record<string, string> } };
+  const status = Number(candidate.status);
+  const code = String(candidate.code ?? candidate.cause?.code ?? '');
+  const transientCodes = new Set(['EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'ENETUNREACH', 'ETIMEDOUT',
+    'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_SOCKET']);
+  const headers = candidate.response?.headers;
+  return candidate.retryable === true || transientCodes.has(code) || status === 404 || status === 408 ||
+    status === 429 || status >= 500 && status <= 599 ||
+    status === 403 && (headers?.['retry-after'] !== undefined || headers?.['x-ratelimit-remaining'] === '0');
+}
+
 export class Controller {
   readonly platform: Platform;
   readonly policy: Policy;
@@ -57,13 +74,15 @@ export class Controller {
     this.clock = clock;
   }
 
-  async tick(number: number): Promise<void> {
+  async tick(number: number, intake?: Intake): Promise<void> {
     const issue = await this.platform.issue(number);
     let record = await this.platform.load(number);
     if (!record) {
-      if (!issue.open || !issue.labeled || !await this.platform.authorizedIntake(number)) return;
+      if (!intake || intake.issueNumber !== number || !issue.open || !issue.labeled ||
+          issue.author.toLowerCase() !== intake.requester.toLowerCase() || !await this.platform.canWrite(intake.actor)) return;
       const baseline = await this.platform.baseline();
-      record = { state: createLifecycle(number, issue.author, this.request(issue), baseline.sha, baseline.branch) };
+      record = { state: createLifecycle(number, intake.requester,
+        this.requestText(intake.title, intake.body), baseline.sha, baseline.branch) };
       await this.platform.save(record);
     }
     const state = record.state;
@@ -286,6 +305,11 @@ export class Controller {
       }
       if (job.stage === 'research' && report.outcome === 'pass') makePlan(report.plan ?? '', state.plan?.version ?? 0);
     } catch (error) {
+      if (transientPlatformError(error)) {
+        const age = this.clock().getTime() - Date.parse(job.createdAt);
+        if (age <= this.policy.jobTimeoutMinutes * 60_000) throw error;
+        return this.failed(record, `Worker result remained unavailable: ${this.message(error)}`);
+      }
       return this.failed(record, `Worker output rejected: ${this.message(error)}`);
     }
     if (report.outcome === 'blocked') {
@@ -384,6 +408,7 @@ export class Controller {
         : 'Controls: `/sdlc pause`, `/sdlc resume`, `/sdlc cancel`, `/sdlc retry`.'));
   }
 
-  private request(issue: Issue): string { return `${issue.title}\n\n${issue.body}`.trim().slice(0, 60000); }
+  private request(issue: Issue): string { return this.requestText(issue.title, issue.body); }
+  private requestText(title: string, body: string): string { return `${title}\n\n${body}`.trim().slice(0, 60000); }
   private message(error: unknown): string { return (error instanceof Error ? error.message : 'Unexpected controller failure').slice(0, 12000); }
 }

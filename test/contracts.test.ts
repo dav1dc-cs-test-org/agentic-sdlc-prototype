@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { policySchema, reportSchema, lifecycleSchema } from '../src/contracts.ts';
+import { lifecycleSchema, parseIntakeEvent, policySchema, reportSchema } from '../src/contracts.ts';
 import { validateChanges } from '../src/changes.ts';
 import { approvePlan, digest, makePlan } from '../src/domain.ts';
 import { createLifecycle } from '../src/lifecycle.ts';
@@ -29,6 +29,19 @@ test('validation never rewrites the text that plan hashes are computed over', ()
   assert.throws(() => lifecycleSchema.parse({ ...state, request: '   ' }));
 });
 
+test('intake is bound to an immutable human label-event snapshot', () => {
+  const event = {
+    action: 'labeled', label: { name: policy.label }, sender: { login: 'maintainer', type: 'User' },
+    issue: { number: 123, title: 'Feature', body: 'Original scope', user: { login: 'requester' } },
+  };
+  assert.deepEqual(parseIntakeEvent(event, policy.label), {
+    issueNumber: 123, actor: 'maintainer', requester: 'requester', title: 'Feature', body: 'Original scope',
+  });
+  assert.equal(parseIntakeEvent({ ...event, action: 'edited' }, policy.label), undefined);
+  assert.equal(parseIntakeEvent({ ...event, label: { name: 'other' } }, policy.label), undefined);
+  assert.equal(parseIntakeEvent({ ...event, sender: { login: 'app[bot]', type: 'Bot' } }, policy.label), undefined);
+});
+
 test('publisher rejects traversal, protected configuration, and case collisions', () => {
   for (const path of ['../escape', '/tmp/escape', 'foo/../bar', '.git/config', 'foo/.GIT/config',
     '.github/workflows/ci.yml', '.GitHub/workflows/ci.yml', 'src/controller.ts',
@@ -38,6 +51,12 @@ test('publisher rejects traversal, protected configuration, and case collisions'
   }
   assert.throws(() => validateChanges([{ path: 'README.md', content: '' },
     { path: 'readme.md', content: '' }], 'code', policy), /colliding/);
+  assert.throws(() => validateChanges([{ path: 'Dir/first.txt', content: '' },
+    { path: 'dir/second.txt', content: '' }], 'code', policy), /colliding/);
+  for (const changes of [
+    [{ path: 'Foo', content: '' }, { path: 'foo/bar.ts', content: '' }],
+    [{ path: 'foo/bar.ts', content: '' }, { path: 'Foo', content: '' }],
+  ]) assert.throws(() => validateChanges(changes, 'code', policy), /Conflicting/);
 });
 
 test('stage permissions and output budgets are enforced by code', () => {

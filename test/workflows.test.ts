@@ -24,11 +24,23 @@ test('generated agents have no publishing credentials or direct write permission
   assert.equal(frontmatter.permissions['pull-requests'], 'read');
   assert.equal(frontmatter.checkout[0].ref, '${{ github.sha }}');
   assert.ok(frontmatter['max-ai-credits'] <= 200);
+  assert.equal(frontmatter['safe-outputs']['report-failure-as-issue'], false);
+  assert.equal(frontmatter['safe-outputs']['report-failed-jobs'], false);
+  assert.equal(frontmatter['safe-outputs']['missing-tool'], false);
+  assert.equal(frontmatter['safe-outputs']['missing-data'], false);
+  assert.equal(frontmatter['safe-outputs']['report-incomplete']['create-issue'], false);
   assert.equal(source.includes('SDLC_APP_PRIVATE_KEY'), false);
   assert.equal(source.includes('create-github-app-token'), false);
   assert.equal(source.includes('create-pull-request:'), false);
   const compiled = read('sdlc-agent.lock.yml');
   assert.equal(compiled.jobs.agent.permissions.contents, 'read');
+  const mutationScopes = ['contents', 'issues', 'pull-requests', 'checks', 'deployments', 'packages', 'security-events'];
+  for (const job of Object.values(compiled.jobs) as { permissions?: Record<string, string> }[]) {
+    for (const scope of mutationScopes) assert.notEqual(job.permissions?.[scope], 'write');
+  }
+  const serialized = JSON.stringify(compiled);
+  assert.equal(serialized.includes('"GH_AW_REPORT_INCOMPLETE_CREATE_ISSUE":"true"'), false);
+  assert.equal(serialized.includes('"GH_AW_REPORT_INCOMPLETE_CREATE_ISSUE":"false"'), true);
 });
 
 test('checks cannot pass by silently skipping a required stage', () => {
