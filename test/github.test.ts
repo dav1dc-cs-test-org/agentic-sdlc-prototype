@@ -151,7 +151,7 @@ test('final PR, advisory review, and commit check are idempotent and reference t
     if (path.endsWith('/issues/123')) return { title: 'Feature', body: 'Request', user: { login: 'requester' }, state: 'open', labels: [] };
     if (path.endsWith('/pulls')) {
       if (method === 'GET') return pulls;
-      pulls.push({ ...body, number: 126, user: { login: 'sdlc[bot]' } });
+      pulls.push({ ...body, number: 126, state: 'open', user: { login: 'sdlc[bot]' } });
       return { number: 126 };
     }
     if (path.endsWith('/reviews')) {
@@ -177,6 +177,8 @@ test('final PR, advisory review, and commit check are idempotent and reference t
   assert.equal(reviews[0]!.commit_id, newSha);
   assert.equal(checks.length, 1);
   assert.equal(checks[0]!.head_sha, newSha);
+  pulls[0]!.state = 'closed';
+  await assert.rejects(github.publish(state), /already closed/);
 });
 
 test('state reads validate identity and reject corrupt or oversized data', async () => {

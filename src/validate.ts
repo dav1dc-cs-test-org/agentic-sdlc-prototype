@@ -33,21 +33,34 @@ export function validateAudit(input: unknown): void {
 }
 
 export function validateSarif(input: unknown): void {
+  const component = z.object({ rules: z.array(z.object({
+    id: z.string(), properties: z.record(z.string(), z.unknown()).optional(),
+  })).default([]) });
   const sarif = z.object({ runs: z.array(z.object({
-    tool: z.object({ driver: z.object({ rules: z.array(z.object({
-      id: z.string(), properties: z.record(z.string(), z.unknown()).optional(),
-    })).default([]) }) }),
+    tool: z.object({ driver: component, extensions: z.array(component).default([]) }),
     results: z.array(z.object({
       ruleId: z.string().optional(), ruleIndex: z.number().int().nonnegative().optional(),
+      rule: z.object({
+        index: z.number().int().nonnegative().optional(),
+        toolComponent: z.object({ index: z.number().int().nonnegative().optional() }).optional(),
+      }).optional(),
       level: z.string().optional(),
     })).default([]),
   })).min(1) }).parse(input);
   let blocking = 0;
-  for (const run of sarif.runs) for (const result of run.results) {
-    const rule = run.tool.driver.rules.find(rule => rule.id === result.ruleId) ??
-      (result.ruleIndex === undefined ? undefined : run.tool.driver.rules[result.ruleIndex]);
-    const severity = Number(rule?.properties?.['security-severity']);
-    if (result.level === 'error' || !Number.isFinite(severity) || severity >= 7) blocking += 1;
+  for (const run of sarif.runs) {
+    // Query packs declare their rules in tool.extensions, so the driver alone under-reports severity.
+    const declared = new Map([run.tool.driver, ...run.tool.extensions]
+      .flatMap(source => source.rules).map(rule => [rule.id, rule]));
+    for (const result of run.results) {
+      const owner = result.rule?.toolComponent?.index === undefined ? run.tool.driver :
+        run.tool.extensions[result.rule.toolComponent.index];
+      const index = result.rule?.index ?? result.ruleIndex;
+      const rule = (result.ruleId === undefined ? undefined : declared.get(result.ruleId)) ??
+        (index === undefined ? undefined : owner?.rules[index]);
+      const severity = Number(rule?.properties?.['security-severity']);
+      if (result.level === 'error' || !Number.isFinite(severity) || severity >= 7) blocking += 1;
+    }
   }
   if (blocking) throw new Error(`CodeQL found ${blocking} blocking or unclassified findings`);
 }
@@ -65,12 +78,13 @@ export function runTestSuite(directory: string, policy: Policy, reports: string)
     .flatMap(name => process.env[name] === undefined ? [] : [[name, process.env[name]!]]));
   const execute = (args: string[]) => {
     const result = spawnSync(process.execPath, args, {
-      cwd: directory, encoding: 'utf8', timeout: 600_000, maxBuffer: 4_000_000,
+      cwd: directory, encoding: 'utf8', timeout: 600_000, maxBuffer: 64_000_000,
       env: environment,
     });
     process.stdout.write(result.stdout ?? '');
     process.stderr.write(result.stderr ?? '');
-    if (result.error || result.status !== 0) throw new Error('Typecheck or test execution failed');
+    if (result.error) throw new Error(`Typecheck or test execution could not complete: ${result.error.message}`);
+    if (result.status !== 0) throw new Error('Typecheck or test execution failed');
   };
   execute([join(root, 'node_modules/typescript/bin/tsc'), '--noEmit', '--project', join(directory, 'tsconfig.json')]);
   execute([join(root, 'node_modules/c8/bin/c8.js'), '--config', join(root, '.github/sdlc/coverage.json'),

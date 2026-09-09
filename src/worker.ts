@@ -93,9 +93,9 @@ function checks(): void {
   const jobId = process.env.SDLC_JOB;
   const inputSha = process.env.SDLC_SOURCE_SHA;
   const stage = process.env.SDLC_STAGE;
+  if (!['scan', 'validate'].includes(stage ?? '')) throw new Error('Unexpected check stage');
   const results = JSON.parse(process.env.SDLC_CHECK_RESULTS ?? '{}') as Record<string, { result?: string }>;
   const required = stage === 'scan' ? ['prepare', 'codeql', 'security'] : ['prepare', 'tests'];
-  if (!['scan', 'validate'].includes(stage ?? '')) throw new Error('Unexpected check stage');
   const failed = required.filter(name => results[name]?.result !== 'success');
   const url = `https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
   const report = reportSchema.parse({ jobId, inputSha,

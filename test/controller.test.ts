@@ -2,14 +2,15 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { Controller, type Comment, type Platform, type RecordState, type Run } from '../src/controller.ts';
-import { policySchema, type Change, type Report } from '../src/contracts.ts';
+import { lifecycleSchema, policySchema, type Change, type Report } from '../src/contracts.ts';
 import type { Job, Lifecycle, Task } from '../src/lifecycle.ts';
 
 const policy = policySchema.parse(JSON.parse(readFileSync('.github/sdlc/policy.json', 'utf8')));
 const baseSha = 'a'.repeat(40);
 
 class FakePlatform implements Platform {
-  stored?: RecordState;
+  raw?: string;
+  version?: string;
   input = { number: 123, title: 'Feature', body: 'Implement a feature', author: 'requester', open: true, labeled: true };
   messages: Comment[] = [];
   outputs = new Map<string, string>();
@@ -29,11 +30,29 @@ class FakePlatform implements Platform {
   async canWrite(actor: string) { return actor === 'maintainer'; }
   async authorizedIntake() { return this.authorized; }
   async baseline() { return { branch: 'main', sha: this.baselineSha }; }
-  async load() { return structuredClone(this.stored); }
-  async save(record: RecordState) { this.stored = structuredClone(record); }
+  // Mirrors GitHub.save/GitHub.load exactly: raw JSON on write, schema-validated on read.
+  async load() {
+    return this.raw === undefined ? undefined :
+      { state: lifecycleSchema.parse(JSON.parse(this.raw)), version: this.version };
+  }
+  async save(record: RecordState) {
+    lifecycleSchema.parse(record.state);
+    this.raw = JSON.stringify(record.state);
+    this.version = `${Number(this.version ?? 0) + 1}`;
+    record.version = this.version;
+  }
+  get stored(): { state: Lifecycle } | undefined {
+    return this.raw === undefined ? undefined : { state: lifecycleSchema.parse(JSON.parse(this.raw)) };
+  }
+  patch(change: (state: Lifecycle) => void): void {
+    const state = lifecycleSchema.parse(JSON.parse(this.raw!));
+    change(state);
+    this.raw = JSON.stringify(state);
+  }
   async comment(_number: number, key: string, body: string) { this.outputs.set(key, body); }
   async task(_state: Lifecycle, task: Task) { return task.id === 'first' ? 124 : 125; }
-  async linkTasks() {}
+  linked = 0;
+  async linkTasks() { this.linked += 1; }
   async dispatch(job: Job) { this.dispatched.push(structuredClone(job)); }
   async findRun(job: Job) { return this.runs.get(job.id); }
   async cancelRun(runId: number) { this.cancelled.push(runId); }
@@ -229,8 +248,7 @@ test('job budget prevents an endless run even after successful agents', async ()
 
 test('closing the feature PR persists cancellation without marking tasks complete', async () => {
   const { platform, controller } = await planned();
-  platform.stored!.state.phase = 'pr_open';
-  platform.stored!.state.prNumber = 126;
+  platform.patch(state => { state.phase = 'pr_open'; state.prNumber = 126; });
   platform.disposition = 'closed';
   await controller.tick(123);
   assert.equal(platform.stored!.state.phase, 'cancelled');
@@ -271,4 +289,57 @@ test('timed-out workers are cancelled and replaced within the infrastructure bud
   assert.deepEqual(platform.cancelled, [20]);
   assert.notEqual(platform.stored!.state.job!.id, first);
   assert.equal(platform.stored!.state.failures, 1);
+});
+
+test('surrounding whitespace in the issue and plan survives persistence', async () => {
+  const platform = new FakePlatform();
+  const controller = new Controller(platform, policy);
+  platform.input.body = 'Implement a feature\n';
+  await controller.tick(123);
+  platform.finish({ plan: '## Plan\n\nImplement the feature with regression coverage.\n' });
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.phase, 'awaiting_approval');
+  platform.reply('/sdlc approve v1');
+  await controller.tick(123);
+  assert.equal(platform.outputs.get('comment:1'), undefined);
+  assert.equal(platform.stored!.state.phase, 'decomposing');
+});
+
+test('rejected commands always explain themselves to the commenter', async () => {
+  const { platform, controller } = await planned();
+  platform.reply('/sdlc approve v1', 'stranger');
+  await controller.tick(123);
+  assert.match(platform.outputs.get('comment:1')!, /only the requester or a repository maintainer/);
+  assert.equal(platform.stored!.state.phase, 'awaiting_approval');
+});
+
+test('an open feature PR rejects further commands instead of ignoring them', async () => {
+  const { platform, controller } = await planned();
+  platform.patch(state => { state.phase = 'pr_open'; state.prNumber = 126; });
+  platform.reply('/sdlc cancel');
+  await controller.tick(123);
+  assert.match(platform.outputs.get('comment:1')!, /pull request #126 is open/);
+  assert.match(platform.outputs.get('status')!, /no longer accepts/);
+  assert.equal(platform.stored!.state.phase, 'pr_open');
+});
+
+test('processed command events do not accumulate beyond the surviving comments', async () => {
+  const { platform, controller } = await planned();
+  platform.reply('/sdlc pause');
+  await controller.tick(123);
+  assert.deepEqual(platform.stored!.state.processedEvents, ['comment:1']);
+  platform.messages = [{ id: 7, body: '/sdlc resume', actor: 'maintainer', human: true, createdAt: '2026-09-08T12:00:00Z' }];
+  await controller.tick(123);
+  assert.deepEqual(platform.stored!.state.processedEvents, ['comment:7']);
+  assert.equal(platform.stored!.state.phase, 'awaiting_approval');
+});
+
+test('task issues are linked once rather than on every reconciliation', async () => {
+  const { platform, controller } = await coding();
+  assert.equal(platform.linked, 1);
+  assert.equal(platform.stored!.state.tasksLinked, true);
+  platform.finish({ changes: [{ path: 'feature.txt', content: 'First' }] });
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.job!.taskId, 'second');
+  assert.equal(platform.linked, 1);
 });

@@ -13,6 +13,7 @@ export function workerFile(job: Job): string {
 
 export function decodeReportArchive(bytes: Uint8Array): Report {
   if (bytes.byteLength > 2_000_000) throw new Error('Artifact exceeds size limit');
+  // Filtering on the declared size keeps a compressed entry from being inflated before it is bounded.
   const files = unzipSync(bytes, {
     filter: file => file.name === 'result.json' && file.originalSize <= 2_000_000,
   });
@@ -30,6 +31,9 @@ export class GitHub implements Platform {
   readonly scope: { owner: string; repo: string };
   readonly policy: Policy;
   readonly botLogin: string;
+  // Reconciliation reads the same lists repeatedly; caches live only for the duration of one process.
+  private readonly commentCache = new Map<number, Awaited<ReturnType<GitHub['fetchComments']>>>();
+  private botIssues?: Awaited<ReturnType<GitHub['fetchBotIssues']>>;
 
   constructor(repository: string, policy: Policy, botLogin: string, api: Octokit) {
     const match = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(repository);
@@ -43,15 +47,29 @@ export class GitHub implements Platform {
   async issue(number: number): Promise<Issue> {
     const { data } = await this.api.issues.get({ ...this.scope, issue_number: number });
     if (data.pull_request) throw new Error('Pull request comments are not issue commands');
-    return { number, title: data.title, body: data.body ?? '', author: data.user!.login,
+    if (!data.user?.login) throw new Error('Issue author is unavailable');
+    return { number, title: data.title, body: data.body ?? '', author: data.user.login,
       open: data.state === 'open', labeled: data.labels.some(label =>
         typeof label === 'string' ? label === this.policy.label : label.name === this.policy.label) };
   }
 
+  private async fetchComments(number: number) {
+    return this.api.paginate(this.api.issues.listComments, { ...this.scope, issue_number: number, per_page: 100 });
+  }
+
+  private async cachedComments(number: number) {
+    const cached = this.commentCache.get(number);
+    if (cached) return cached;
+    const comments = await this.fetchComments(number);
+    this.commentCache.set(number, comments);
+    return comments;
+  }
+
   async comments(number: number): Promise<Comment[]> {
-    const comments = await this.api.paginate(this.api.issues.listComments, { ...this.scope, issue_number: number, per_page: 100 });
-    return comments.map(comment => ({ id: comment.id, body: comment.body ?? '', actor: comment.user!.login,
-      human: comment.user?.type === 'User' && comment.created_at === comment.updated_at, createdAt: comment.created_at }));
+    const comments = await this.cachedComments(number);
+    return comments.flatMap(comment => comment.user?.login ? [{ id: comment.id, body: comment.body ?? '',
+      actor: comment.user.login, human: comment.user.type === 'User' && comment.created_at === comment.updated_at,
+      createdAt: comment.created_at }] : []);
   }
 
   async canWrite(actor: string): Promise<boolean> {
@@ -132,23 +150,29 @@ export class GitHub implements Platform {
   async comment(number: number, key: string, body: string): Promise<void> {
     const marker = `<!-- sdlc:${key} -->`;
     const text = `${marker}\n${body}`;
-    const comments = await this.api.paginate(this.api.issues.listComments, { ...this.scope, issue_number: number, per_page: 100 });
+    const comments = await this.cachedComments(number);
     const existing = comments.find(comment => comment.user?.login === this.botLogin && comment.body?.startsWith(marker));
     if (existing?.body === text) return;
     if (existing) await this.api.issues.updateComment({ ...this.scope, comment_id: existing.id, body: text });
     else await this.api.issues.createComment({ ...this.scope, issue_number: number, body: text });
+    this.commentCache.delete(number);
+  }
+
+  private async fetchBotIssues() {
+    return this.api.paginate(this.api.issues.listForRepo, { ...this.scope,
+      creator: this.botLogin, state: 'all', per_page: 100 });
   }
 
   async task(parent: Lifecycle, task: Task): Promise<number> {
     const marker = `<!-- sdlc:task:${parent.issueNumber}:${parent.plan!.hash}:${task.id} -->`;
-    const issues = await this.api.paginate(this.api.issues.listForRepo, { ...this.scope,
-      creator: this.botLogin, state: 'all', per_page: 100 });
-    let child = issues.find(issue => issue.user?.login === this.botLogin && issue.body?.startsWith(marker));
+    this.botIssues ??= await this.fetchBotIssues();
+    let child = this.botIssues.find(issue => issue.user?.login === this.botLogin && issue.body?.startsWith(marker));
     if (!child) {
       child = (await this.api.issues.create({ ...this.scope, title: task.title,
         body: `${marker}\nParent: #${parent.issueNumber}\n\n${task.description}\n\n## Acceptance criteria\n\n` +
           task.acceptance.map(item => `- ${item}`).join('\n') + `\n\nDependencies: ${task.dependsOn.join(', ') || 'None'}`,
       })).data;
+      this.botIssues.push(child);
     }
     const linked = await this.api.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues', {
       ...this.scope, issue_number: parent.issueNumber, per_page: 100,
@@ -245,6 +269,11 @@ export class GitHub implements Platform {
     const source = await this.tree(job.inputSha);
     const sourceTree = source.files;
     const baselineTree = state.baseSha === job.inputSha ? sourceTree : (await this.tree(state.baseSha)).files;
+    const caseFolded = new Map<string, number>();
+    for (const path of sourceTree.keys()) {
+      const folded = path.toLowerCase();
+      caseFolded.set(folded, (caseFolded.get(folded) ?? 0) + 1);
+    }
     for (const change of changes) {
       const existing = sourceTree.get(change.path);
       if (existing && (existing.type !== 'blob' || !['100644', '100755'].includes(existing.mode ?? ''))) {
@@ -252,9 +281,13 @@ export class GitHub implements Platform {
       }
       if (isTestPath(change.path, this.policy) && baselineTree.has(change.path)) throw new Error('Existing baseline tests are immutable');
       if (change.content === null && !existing) throw new Error('Cannot delete a missing file');
-      for (const [path, entry] of sourceTree) {
-        if (path.toLowerCase() === change.path.toLowerCase() && path !== change.path) throw new Error('Existing path has different casing');
-        if (change.path.startsWith(`${path}/`) && entry.type !== 'tree') throw new Error('Non-directory path ancestor');
+      if ((caseFolded.get(change.path.toLowerCase()) ?? 0) > (existing ? 1 : 0)) {
+        throw new Error('Existing path has different casing');
+      }
+      const segments = change.path.split('/');
+      for (let depth = 1; depth < segments.length; depth += 1) {
+        const ancestor = sourceTree.get(segments.slice(0, depth).join('/'));
+        if (ancestor && ancestor.type !== 'tree') throw new Error('Non-directory path ancestor');
       }
       if (changes.some(other => other !== change && change.path.startsWith(`${other.path}/`))) {
         throw new Error('Conflicting file and directory changes');
@@ -295,8 +328,10 @@ export class GitHub implements Platform {
     const marker = `<!-- sdlc:feature:${state.issueNumber}:${state.plan!.hash} -->`;
     const { data: existing } = await this.api.pulls.list({ ...this.scope, state: 'all',
       head: `${this.scope.owner}:${state.branch}`, base: state.baseBranch, per_page: 100 });
-    let pullNumber = existing.find(candidate => candidate.user?.login === this.botLogin && candidate.body?.startsWith(marker))?.number;
-    if (existing.length && !pullNumber) throw new Error('Working branch already has an unrelated pull request');
+    const mine = existing.filter(candidate => candidate.user?.login === this.botLogin && candidate.body?.startsWith(marker));
+    if (existing.length > mine.length) throw new Error('Working branch already has an unrelated pull request');
+    let pullNumber = mine.find(candidate => candidate.state === 'open')?.number;
+    if (!pullNumber && mine.length) throw new Error('The feature pull request for this plan was already closed');
     const evidence = state.evidence.map(item =>
       `- **${item.stage}**: ${item.summary}\n  [Run ${item.runId}](https://github.com/${this.scope.owner}/${this.scope.repo}/actions/runs/${item.runId})`).join('\n');
     if (!pullNumber) {

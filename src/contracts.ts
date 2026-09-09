@@ -4,7 +4,8 @@ import type { Lifecycle } from './lifecycle.ts';
 export const shaSchema = z.string().regex(/^[a-f0-9]{40}$/);
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const numberSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
-const text = z.string().trim().min(1);
+// Validation must never rewrite stored text: persisted plan hashes are computed over the exact body.
+const text = z.string().min(1).regex(/\S/);
 export const stageSchema = z.enum(['research', 'decompose', 'code', 'scan', 'security', 'test', 'validate', 'review']);
 export const phaseSchema = z.enum([
   'researching', 'awaiting_approval', 'decomposing', 'coding', 'scanning', 'security',
@@ -68,6 +69,7 @@ export const lifecycleSchema = z.object({
     actor: text.max(100), commentId: numberSchema, planHash: hashSchema, at: z.iso.datetime(),
   }).strict().optional(),
   tasks: z.array(taskSchema.extend({ issueNumber: numberSchema.optional(), completed: z.boolean() })).max(12),
+  tasksLinked: z.boolean().optional(),
   retiredTasks: z.array(numberSchema).max(120),
   job: jobSchema.optional(),
   evidence: z.array(z.object({

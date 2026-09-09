@@ -48,6 +48,7 @@ export interface Lifecycle {
   plan?: Plan;
   approval?: Approval;
   tasks: Task[];
+  tasksLinked?: boolean;
   retiredTasks: number[];
   job?: Job;
   evidence: Evidence[];

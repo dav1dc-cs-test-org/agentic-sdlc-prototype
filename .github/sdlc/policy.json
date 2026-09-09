@@ -12,6 +12,7 @@
   "protectedPaths": [
     ".github/**", ".agents/**", ".vscode/**", "AGENTS.md", "**/AGENTS.md",
     ".npmrc", "**/.npmrc", ".gitmodules", ".gitattributes", "**/.gitattributes",
+    "package.json", "**/package.json", "package-lock.json", "**/package-lock.json",
     "src/*.ts", "tsconfig.json", ".c8rc.json", "**/*instructions.md", "**/*.agent.md"
   ],
   "testPaths": ["test/**/*.test.ts"],

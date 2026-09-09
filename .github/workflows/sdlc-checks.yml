@@ -125,7 +125,7 @@ jobs:
       - run: npm ci --ignore-scripts --prefix control
       - name: Check dependencies against the advisory database
         run: |
-          npm --prefix source audit --ignore-scripts --package-lock-only --audit-level=high --json > "$RUNNER_TEMP/audit.json"
+          npm --prefix source audit --ignore-scripts --package-lock-only --audit-level=high --json > "$RUNNER_TEMP/audit.json" || true
           node control/src/validate.ts audit "$RUNNER_TEMP/audit.json"
       - name: Install checksum-pinned secret scanner
         run: |

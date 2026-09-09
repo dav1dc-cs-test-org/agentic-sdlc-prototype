@@ -28,11 +28,12 @@ export function digest(value: unknown): string {
 }
 
 export function makePlan(body: string, previousVersion: number): Plan {
-  if (!body.trim() || body.length > 24000) throw new Error('Invalid plan length');
+  const normalized = body.trim();
+  if (!normalized || normalized.length > 24000) throw new Error('Invalid plan length');
   if (!Number.isSafeInteger(previousVersion) || previousVersion < 0 ||
       previousVersion >= Number.MAX_SAFE_INTEGER) throw new Error('Invalid plan version');
   const version = previousVersion + 1;
-  return { version, body, hash: digest({ version, body }) };
+  return { version, body: normalized, hash: digest({ version, body: normalized }) };
 }
 
 export function parseCommand(body: string): Command | undefined {

@@ -91,9 +91,11 @@ export class Controller {
       await this.status(state);
       return;
     }
-    if (terminalPhases.includes(state.phase) || state.phase === 'pr_open') return;
+    if (terminalPhases.includes(state.phase)) return;
 
     const comments = (await this.platform.comments(number)).sort((first, second) => first.id - second.id);
+    const present = new Set(comments.map(comment => `comment:${comment.id}`));
+    state.processedEvents = state.processedEvents.filter(key => present.has(key));
     for (const comment of comments) {
       const key = `comment:${comment.id}`;
       if (!comment.human || state.processedEvents.includes(key)) continue;
@@ -103,10 +105,15 @@ export class Controller {
       const requester = comment.actor.toLowerCase() === state.requester.toLowerCase();
       state.processedEvents.push(key);
       if (!maintainer && !requester) {
+        await this.platform.comment(number, key,
+          'Command rejected: only the requester or a repository maintainer can control this lifecycle.');
         await this.platform.save(record);
         continue;
       }
       try {
+        if (state.phase === 'pr_open') {
+          throw new Error(`The feature pull request #${state.prNumber} is open; manage this change through PR review.`);
+        }
         if (command.kind === 'approve') {
           if (this.request(issue) !== state.request) throw new Error('Issue changed; request a revised plan first');
           state.approval = approvePlan({
@@ -115,7 +122,6 @@ export class Controller {
           });
           state.phase = 'decomposing';
         } else if (command.kind === 'revise') {
-          if (state.prNumber) throw new Error('An open PR must be handled through PR review');
           const baseline = await this.platform.baseline();
           const previousJob = state.job;
           state.retiredTasks.push(...state.tasks.flatMap(task => task.issueNumber ? [task.issueNumber] : []));
@@ -128,6 +134,7 @@ export class Controller {
           state.baseBranch = baseline.branch;
           state.branch = `agentic/epic-${number}-v${(state.plan?.version ?? 0) + 1}`;
           state.tasks = [];
+          state.tasksLinked = undefined;
           state.evidence = [];
           state.feedback = command.feedback.slice(0, 24000);
           state.error = undefined;
@@ -155,6 +162,11 @@ export class Controller {
       }
       await this.platform.save(record);
       if (terminalPhases.includes(state.phase)) break;
+    }
+
+    if (state.phase === 'pr_open') {
+      await this.status(state);
+      return;
     }
 
     if (state.retiredTasks.length) {
@@ -190,10 +202,15 @@ export class Controller {
       for (const task of state.tasks) {
         if (!task.issueNumber) {
           task.issueNumber = await this.platform.task(state, task);
+          state.tasksLinked = undefined;
           await this.platform.save(record);
         }
       }
-      await this.platform.linkTasks(state);
+      if (!state.tasksLinked) {
+        await this.platform.linkTasks(state);
+        state.tasksLinked = true;
+        await this.platform.save(record);
+      }
     }
     if (state.phase === 'publishing') {
       try { assertPublishable(state); }
@@ -239,8 +256,8 @@ export class Controller {
     const job = state.job!;
     const run = await this.platform.findRun(job);
     if (!run) {
-      const age = this.clock().getTime() - Date.parse(job.dispatchedAt ?? job.createdAt);
       if (!job.dispatchedAt) return this.send(record);
+      const age = this.clock().getTime() - Date.parse(job.dispatchedAt);
       if (age < this.policy.dispatchGraceMinutes * 60_000) return;
       if (job.attempt >= this.policy.maxJobAttempts) return this.failed(record, 'Worker dispatch did not produce a run');
       job.attempt += 1;
@@ -303,6 +320,7 @@ export class Controller {
       state.feedback = '';
     } else if (job.stage === 'decompose') {
       state.tasks = report.tasks!.map(task => ({ ...task, completed: false }));
+      state.tasksLinked = undefined;
       state.phase = 'coding';
     } else if (job.stage === 'code') {
       const task = state.tasks.find(task => task.id === job.taskId);
@@ -361,9 +379,11 @@ export class Controller {
       (state.job ? `Active job: \`${state.job.id}\` (${state.job.stage}).\n\n` : '') +
       (state.error ? `${state.error}\n\n` : '') +
       (state.prNumber ? `Feature PR: #${state.prNumber}\n\n` : '') +
-      'Controls: `/sdlc pause`, `/sdlc resume`, `/sdlc cancel`, `/sdlc retry`.');
+      (['pr_open', 'merged', 'cancelled'].includes(state.phase)
+        ? 'This lifecycle no longer accepts `/sdlc` commands. Continue through pull request review.'
+        : 'Controls: `/sdlc pause`, `/sdlc resume`, `/sdlc cancel`, `/sdlc retry`.'));
   }
 
-  private request(issue: Issue): string { return `${issue.title}\n\n${issue.body}`.slice(0, 60000); }
+  private request(issue: Issue): string { return `${issue.title}\n\n${issue.body}`.trim().slice(0, 60000); }
   private message(error: unknown): string { return (error instanceof Error ? error.message : 'Unexpected controller failure').slice(0, 12000); }
 }

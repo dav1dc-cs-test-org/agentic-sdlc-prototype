@@ -34,6 +34,21 @@ test('CodeQL findings are evaluated from rule metadata, not agent opinion', () =
   ] } }, results: [{ ruleIndex: 0, level: 'warning' }] }] }));
 });
 
+test('severity declared by a query pack extension is honoured instead of blocking blindly', () => {
+  const extended = { runs: [{
+    tool: { driver: { rules: [] }, extensions: [{ rules: [
+      { id: 'pack/low', properties: { 'security-severity': '2.5' } },
+      { id: 'pack/high', properties: { 'security-severity': '9.0' } },
+    ] }] },
+    results: [{ ruleId: 'pack/low', level: 'warning' }],
+  }] };
+  assert.doesNotThrow(() => validateSarif(extended));
+  assert.throws(() => validateSarif({ runs: [{ ...extended.runs[0],
+    results: [{ ruleId: 'pack/high', level: 'warning' }] }] }), /blocking/);
+  assert.doesNotThrow(() => validateSarif({ runs: [{ ...extended.runs[0],
+    results: [{ rule: { index: 0, toolComponent: { index: 0 } }, level: 'warning' }] }] }));
+});
+
 test('secret findings and malformed scanner output block the gate', () => {
   assert.doesNotThrow(() => validateSecrets([]));
   assert.throws(() => validateSecrets([{ RuleID: 'credential' }]), /potential credentials/);
