@@ -55,6 +55,15 @@ jobs:
           permission-pull-requests: write
           permission-actions: write
           permission-checks: write
+      - name: Assert the worker actor gate matches the minted App identity
+        env:
+          expected: ${{ vars.SDLC_APP_SLUG }}
+          actual: ${{ steps.app.outputs.app-slug }}
+        run: |
+          if [[ "$expected" != "$actual" ]]; then
+            echo "SDLC_APP_SLUG is '$expected' but this App is '$actual'; every dispatched worker would skip its actor gate." >&2
+            exit 1
+          fi
       - name: Reconcile authoritative lifecycle state
         run: node src/main.ts
         env:

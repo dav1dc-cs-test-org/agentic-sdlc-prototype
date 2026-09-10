@@ -16,6 +16,15 @@ test('controller listens for intake, new commands, completion, and recovery even
   assert.match(workflow.jobs.reconcile.if, /default_branch/);
 });
 
+test('controller fails loudly when the worker actor gate cannot match the App', () => {
+  const steps = read('sdlc-controller.yml').jobs.reconcile.steps as { run?: string; env?: Record<string, string> }[];
+  const guard = steps.find(step => step.env?.expected === '${{ vars.SDLC_APP_SLUG }}');
+  assert.ok(guard, 'the controller must compare SDLC_APP_SLUG against the minted App slug');
+  assert.equal(guard.env?.actual, '${{ steps.app.outputs.app-slug }}');
+  assert.match(guard.run ?? '', /exit 1/);
+  assert.ok(steps.indexOf(guard) < steps.findIndex(step => step.run?.includes('src/main.ts')));
+});
+
 test('generated agents have no publishing credentials or direct write permissions', () => {
   const source = readFileSync('.github/workflows/sdlc-agent.md', 'utf8');
   const frontmatter = parse(source.split('---')[1]!);
