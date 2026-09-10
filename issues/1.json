@@ -87,6 +87,17 @@
   ],
   "tasksLinked": true,
   "retiredTasks": [],
+  "job": {
+    "id": "1-10",
+    "stage": "code",
+    "inputSha": "baa67902daa40e496d3718d758678178ab8cbe74",
+    "controlSha": "12d67462e653c26070f78717aeda119654e06f1b",
+    "planHash": "2453c753e6cd75f2165425bcbd6c77772974f889414bf66d74a179358f5bc6a4",
+    "taskId": null,
+    "feedback": "Required checks failed or did not run: codeql. Inspect https://github.com/dav1dc-cs-test-org/agentic-sdlc-prototype/actions/runs/34522999079.",
+    "attempt": 1,
+    "createdAt": "2026-09-10T19:54:44.850Z"
+  },
   "evidence": [],
   "processedEvents": [
     "comment:5623779192",
@@ -95,7 +106,7 @@
     "comment:5623990540",
     "comment:5624115713"
   ],
-  "sequence": 9,
+  "sequence": 10,
   "repairs": 1,
   "failures": 0,
   "feedback": "Required checks failed or did not run: codeql. Inspect https://github.com/dav1dc-cs-test-org/agentic-sdlc-prototype/actions/runs/34522999079."
