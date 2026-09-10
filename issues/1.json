@@ -16,14 +16,6 @@
   },
   "tasks": [],
   "retiredTasks": [],
-  "evidence": [],
-  "processedEvents": [
-    "comment:5623779192"
-  ],
-  "sequence": 2,
-  "repairs": 0,
-  "failures": 0,
-  "feedback": "ensure that we use playwright plugin to capture screenshots as evidence and audit trail of all our activities",
   "job": {
     "id": "1-2",
     "stage": "research",
@@ -34,6 +26,15 @@
     "feedback": "ensure that we use playwright plugin to capture screenshots as evidence and audit trail of all our activities",
     "attempt": 1,
     "createdAt": "2026-09-10T18:48:33.715Z",
-    "dispatchedAt": "2026-09-10T18:48:34.828Z"
-  }
+    "dispatchedAt": "2026-09-10T18:48:34.828Z",
+    "runId": 34516600651
+  },
+  "evidence": [],
+  "processedEvents": [
+    "comment:5623779192"
+  ],
+  "sequence": 2,
+  "repairs": 0,
+  "failures": 0,
+  "feedback": "ensure that we use playwright plugin to capture screenshots as evidence and audit trail of all our activities"
 }
