@@ -20,8 +20,19 @@
   "processedEvents": [
     "comment:5623779192"
   ],
-  "sequence": 1,
+  "sequence": 2,
   "repairs": 0,
   "failures": 0,
-  "feedback": "ensure that we use playwright plugin to capture screenshots as evidence and audit trail of all our activities"
+  "feedback": "ensure that we use playwright plugin to capture screenshots as evidence and audit trail of all our activities",
+  "job": {
+    "id": "1-2",
+    "stage": "research",
+    "inputSha": "12d67462e653c26070f78717aeda119654e06f1b",
+    "controlSha": "12d67462e653c26070f78717aeda119654e06f1b",
+    "planHash": "61a94c423b0a24ed1f1be7774cedb3f23f98c8075dec6996a241943d64264fc2",
+    "taskId": null,
+    "feedback": "ensure that we use playwright plugin to capture screenshots as evidence and audit trail of all our activities",
+    "attempt": 1,
+    "createdAt": "2026-09-10T18:48:33.715Z"
+  }
 }
