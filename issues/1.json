@@ -87,6 +87,17 @@
   ],
   "tasksLinked": true,
   "retiredTasks": [],
+  "job": {
+    "id": "1-6",
+    "stage": "code",
+    "inputSha": "d1b60315463e5522545b5779881db460fba5f619",
+    "controlSha": "12d67462e653c26070f78717aeda119654e06f1b",
+    "planHash": "2453c753e6cd75f2165425bcbd6c77772974f889414bf66d74a179358f5bc6a4",
+    "taskId": "worldclock-geometry",
+    "feedback": "",
+    "attempt": 1,
+    "createdAt": "2026-09-10T19:31:13.210Z"
+  },
   "evidence": [],
   "processedEvents": [
     "comment:5623779192",
@@ -95,7 +106,7 @@
     "comment:5623990540",
     "comment:5624115713"
   ],
-  "sequence": 5,
+  "sequence": 6,
   "repairs": 0,
   "failures": 0,
   "feedback": ""
