@@ -6,17 +6,11 @@
   "phase": "researching",
   "baseSha": "12d67462e653c26070f78717aeda119654e06f1b",
   "headSha": "12d67462e653c26070f78717aeda119654e06f1b",
-  "baseBranch": "main",
   "controlSha": "12d67462e653c26070f78717aeda119654e06f1b",
+  "baseBranch": "main",
   "branch": "agentic/epic-1-v1",
   "tasks": [],
   "retiredTasks": [],
-  "evidence": [],
-  "processedEvents": [],
-  "sequence": 1,
-  "repairs": 0,
-  "failures": 0,
-  "feedback": "",
   "job": {
     "id": "1-1",
     "stage": "research",
@@ -27,6 +21,13 @@
     "feedback": "",
     "attempt": 1,
     "createdAt": "2026-09-10T17:52:28.446Z",
-    "dispatchedAt": "2026-09-10T17:52:29.758Z"
-  }
+    "dispatchedAt": "2026-09-10T17:52:29.758Z",
+    "runId": 34510870247
+  },
+  "evidence": [],
+  "processedEvents": [],
+  "sequence": 1,
+  "repairs": 0,
+  "failures": 0,
+  "feedback": ""
 }
