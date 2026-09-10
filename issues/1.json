@@ -95,7 +95,8 @@
     "taskId": "worldclock-time",
     "feedback": "",
     "attempt": 1,
-    "createdAt": "2026-09-10T19:23:20.486Z"
+    "createdAt": "2026-09-10T19:23:20.486Z",
+    "dispatchedAt": "2026-09-10T19:23:21.716Z"
   },
   "evidence": [],
   "processedEvents": [
