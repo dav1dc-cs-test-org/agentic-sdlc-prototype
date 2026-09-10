@@ -36,6 +36,7 @@
     "taskId": null,
     "feedback": "Drop the Playwright and screenshot request entirely. Keep the original scope: pure timezone conversion, hand geometry, and deterministic SVG rendering under src/worldclock/, with no new dependencies.",
     "attempt": 1,
-    "createdAt": "2026-09-10T19:06:02.731Z"
+    "createdAt": "2026-09-10T19:06:02.731Z",
+    "dispatchedAt": "2026-09-10T19:06:03.847Z"
   }
 }
