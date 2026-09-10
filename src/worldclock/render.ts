@@ -84,3 +84,29 @@ export function renderClock(instant: Date, timeZone: string, x: number): string 
     '</g>',
   ].join('');
 }
+
+/** Fixed pixel width/height allotted to a single clock face, including its label. */
+const CLOCK_WIDTH = FACE_RADIUS * 2;
+const CLOCK_HEIGHT = FACE_RADIUS * 2;
+
+/**
+ * Renders a list of IANA timezones as a single well-formed SVG document,
+ * one clock face per entry, laid out left to right in the order supplied at
+ * deterministic x-offsets derived only from array index and length. The
+ * document's width and height derive only from timeZones.length. An empty
+ * array returns a valid empty <svg> document rather than throwing. Pure: no
+ * Date.now(), process.env, or file/network/console I/O; the instant is
+ * always the explicit parameter.
+ */
+export function renderClocks(instant: Date, timeZones: string[]): string {
+  const width = CLOCK_WIDTH * timeZones.length;
+  const height = timeZones.length === 0 ? 0 : CLOCK_HEIGHT;
+
+  const groups = timeZones.map((timeZone, index) => renderClock(instant, timeZone, index * CLOCK_WIDTH));
+
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${formatNumber(width)}" height="${formatNumber(height)}" viewBox="0 0 ${formatNumber(width)} ${formatNumber(height)}">`,
+    ...groups,
+    '</svg>',
+  ].join('');
+}
