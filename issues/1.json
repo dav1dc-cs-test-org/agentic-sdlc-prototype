@@ -5,7 +5,7 @@
   "request": "[Feature]\n\n### Objective\n\nProvide a dependency-free TypeScript module that renders multiple analog clock faces as a single standalone SVG document, one clock per requested IANA timezone, so a reader can see the current time across several regions at a glance.\n\nThe module is a pure rendering library: callers supply the instant to render, and the module returns SVG markup. This keeps output deterministic and fully testable under Node's built-in test runner.\n\n### Acceptance Criteria\n\nTime conversion\n\nREQ-1: Given a UTC instant and an IANA timezone identifier, the module resolves the local hour (0–23), minute, and second in that zone.\nREQ-2: Zones with non-integer UTC offsets resolve correctly, verified for Asia/Kolkata (+05:30), Asia/Kathmandu (+05:45), and Australia/Eucla (+08:45).\nREQ-3: Daylight saving transitions resolve correctly, verified for the same instant rendered in America/New_York and Europe/London on dates either side of a transition.\nREQ-4: An unrecognised timezone identifier throws an error naming the offending identifier. The error is thrown, not swallowed or defaulted to UTC.\n\nHand geometry\n\nREQ-5: The second hand is at seconds × 6 degrees clockwise from twelve.\nREQ-6: The minute hand is at minutes × 6 + seconds × 0.1 degrees, so it advances smoothly within the minute.\nREQ-7: The hour hand is at (hour mod 12) × 30 + minutes × 0.5 degrees, so 6:30 local time places it midway between 6 and 7.\nREQ-8: Local midnight and local noon both place the hour hand at 0 degrees.\nREQ-9: All returned angles are normalised to the range [0, 360).\n\nRendering\n\nREQ-10: Rendering one clock returns an SVG group containing a circular face, twelve hour ticks, three hands, and a text label showing the timezone.\nREQ-11: Rendering a list of timezones returns one complete, well-formed SVG document containing exactly one clock group per entry, laid out left to right in the order supplied.\nREQ-12: The same (instant, timezone list) pair always produces byte-identical output.\nREQ-13: Timezone labels are escaped so that &, <, and > cannot break out of the SVG text element.\nREQ-14: An empty timezone list returns a valid empty SVG document rather than throwing.\nREQ-15: A duplicated timezone in the list renders that clock once per occurrence.\n\n### Constraints and Non-goals\n\nHard constraints — the change is rejected if any are violated\n\nNo new runtime or development dependencies. package.json and package-lock.json are protected paths. Use Node built-ins only; resolve timezones with Intl.DateTimeFormat and formatToParts, not a vendored timezone database.\nAll new source goes under src/worldclock/. Top-level src/*.ts and tsconfig.json are protected and must not be modified.\nAll new tests go under test and match test/**/*.test.ts.\nNo binary files. SVG is emitted as text; no PNG, ICO, or font assets.\nOverall coverage must not drop. The baseline is 90.77% lines and 85.66% branches with a permitted drop of zero, so every new branch — including each error path — needs a test.\nRendering functions must be pure: no Date.now(), no process.env, no file, network, or console I/O. The instant is always a parameter.\nScope must fit six tasks or fewer.\n\nNon-goals\n\nNo browser application, framework, bundler, or build step.\nNo live ticking, animation, or setInterval.\nNo CLI entry point. An uncovered entry module would breach the coverage gate.\nNo persistence, configuration files, user preferences, or network calls.\nNo digital time display, no date display, no analog/digital toggle.\n\n### Context\n\nFollow the existing module conventions in lifecycle.ts and the test style in lifecycle.test.ts, including .ts extensions on relative imports.\nBudgets and protected paths are defined in policy.json.\nVerification runs via npm run verify.",
   "phase": "coding",
   "baseSha": "12d67462e653c26070f78717aeda119654e06f1b",
-  "headSha": "e1af637faa321bf53a61983bf74ebc9642b88083",
+  "headSha": "58ed322da2a274edf0e04675e1977a0aca129e7b",
   "controlSha": "12d67462e653c26070f78717aeda119654e06f1b",
   "baseBranch": "main",
   "branch": "agentic/epic-1-v2",
@@ -65,7 +65,7 @@
         "worldclock-geometry"
       ],
       "issueNumber": 4,
-      "completed": false
+      "completed": true
     },
     {
       "id": "worldclock-render-document",
@@ -87,19 +87,6 @@
   ],
   "tasksLinked": true,
   "retiredTasks": [],
-  "job": {
-    "id": "1-7",
-    "stage": "code",
-    "inputSha": "e1af637faa321bf53a61983bf74ebc9642b88083",
-    "controlSha": "12d67462e653c26070f78717aeda119654e06f1b",
-    "planHash": "2453c753e6cd75f2165425bcbd6c77772974f889414bf66d74a179358f5bc6a4",
-    "taskId": "worldclock-render-single",
-    "feedback": "",
-    "attempt": 1,
-    "createdAt": "2026-09-10T19:37:58.371Z",
-    "dispatchedAt": "2026-09-10T19:37:59.694Z",
-    "runId": 34521565878
-  },
   "evidence": [],
   "processedEvents": [
     "comment:5623779192",
