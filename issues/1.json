@@ -33,8 +33,8 @@
         "resolveLocalTime never calls Date.now(), reads process.env, or performs file/network/console I/O; every test passes a fixed literal Date"
       ],
       "dependsOn": [],
-      "completed": false,
-      "issueNumber": 2
+      "issueNumber": 2,
+      "completed": false
     },
     {
       "id": "worldclock-geometry",
@@ -48,8 +48,8 @@
         "REQ-9: All three functions return angles normalised to [0, 360) for inputs that would otherwise produce values at or above 360 or below 0"
       ],
       "dependsOn": [],
-      "completed": false,
-      "issueNumber": 3
+      "issueNumber": 3,
+      "completed": false
     },
     {
       "id": "worldclock-render-single",
@@ -64,8 +64,8 @@
         "worldclock-time",
         "worldclock-geometry"
       ],
-      "completed": false,
-      "issueNumber": 4
+      "issueNumber": 4,
+      "completed": false
     },
     {
       "id": "worldclock-render-document",
@@ -81,10 +81,11 @@
       "dependsOn": [
         "worldclock-render-single"
       ],
-      "completed": false,
-      "issueNumber": 5
+      "issueNumber": 5,
+      "completed": false
     }
   ],
+  "tasksLinked": true,
   "retiredTasks": [],
   "job": {
     "id": "1-5",
@@ -96,7 +97,8 @@
     "feedback": "",
     "attempt": 1,
     "createdAt": "2026-09-10T19:23:20.486Z",
-    "dispatchedAt": "2026-09-10T19:23:21.716Z"
+    "dispatchedAt": "2026-09-10T19:23:21.716Z",
+    "runId": 34520113595
   },
   "evidence": [],
   "processedEvents": [
@@ -109,6 +111,5 @@
   "sequence": 5,
   "repairs": 0,
   "failures": 0,
-  "feedback": "",
-  "tasksLinked": true
+  "feedback": ""
 }
