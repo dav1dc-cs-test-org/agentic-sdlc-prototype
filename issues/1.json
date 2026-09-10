@@ -86,6 +86,17 @@
     }
   ],
   "retiredTasks": [],
+  "job": {
+    "id": "1-5",
+    "stage": "code",
+    "inputSha": "12d67462e653c26070f78717aeda119654e06f1b",
+    "controlSha": "12d67462e653c26070f78717aeda119654e06f1b",
+    "planHash": "2453c753e6cd75f2165425bcbd6c77772974f889414bf66d74a179358f5bc6a4",
+    "taskId": "worldclock-time",
+    "feedback": "",
+    "attempt": 1,
+    "createdAt": "2026-09-10T19:23:20.486Z"
+  },
   "evidence": [],
   "processedEvents": [
     "comment:5623779192",
@@ -94,7 +105,7 @@
     "comment:5623990540",
     "comment:5624115713"
   ],
-  "sequence": 4,
+  "sequence": 5,
   "repairs": 0,
   "failures": 0,
   "feedback": "",
