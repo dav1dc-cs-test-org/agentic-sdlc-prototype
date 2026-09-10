@@ -33,6 +33,7 @@
     "taskId": null,
     "feedback": "ensure that we use playwright plugin to capture screenshots as evidence and audit trail of all our activities",
     "attempt": 1,
-    "createdAt": "2026-09-10T18:48:33.715Z"
+    "createdAt": "2026-09-10T18:48:33.715Z",
+    "dispatchedAt": "2026-09-10T18:48:34.828Z"
   }
 }
