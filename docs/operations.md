@@ -79,14 +79,83 @@ on a persistent runner with organization credentials or access to production.
 
 ## 3. Protect Branches
 
-Configure a ruleset for `sdlc-state` before its first creation. Restrict creation,
-updates, and deletion to the controller App using a state-branch-only bypass.
-Do not require a PR for state updates. The controller initializes this branch
-with an isolated root commit and maintains an auditable JSON history.
+Every command below assumes these two values. For `Integration` bypass actors,
+`actor_id` is the numeric App ID, not the installation ID.
+
+```sh
+repo=OWNER/REPO
+app=$(gh api "/repos/$repo/actions/variables/SDLC_APP_ID" --jq .value)
+```
+
+Create both `sdlc-state` rulesets before the branch's first creation, because
+`creation` is only evaluated when the branch does not yet exist. The state
+branch needs two rulesets rather than one: bypass is granted per ruleset, not
+per rule, so a single ruleset would also hand the App the deletion and
+force-push rights it must never hold. Rules aggregate across rulesets, so the
+split leaves the App able to create and push state commits while staying bound
+by the locks. The controller initializes this branch with an isolated root
+commit and maintains an auditable JSON history; it never deletes or rewrites it.
+
+```sh
+gh api -X POST "/repos/$repo/rulesets" --input - <<JSON
+{
+  "name": "sdlc-state controller writes",
+  "target": "branch",
+  "enforcement": "active",
+  "bypass_actors": [{ "actor_id": $app, "actor_type": "Integration", "bypass_mode": "always" }],
+  "conditions": { "ref_name": { "include": ["refs/heads/sdlc-state"], "exclude": [] } },
+  "rules": [{ "type": "creation" }, { "type": "update" }]
+}
+JSON
+```
+
+```sh
+gh api -X POST "/repos/$repo/rulesets" --input - <<'JSON'
+{
+  "name": "sdlc-state immutable history",
+  "target": "branch",
+  "enforcement": "active",
+  "bypass_actors": [],
+  "conditions": { "ref_name": { "include": ["refs/heads/sdlc-state"], "exclude": [] } },
+  "rules": [{ "type": "deletion" }, { "type": "non_fast_forward" }]
+}
+JSON
+```
+
+Do not require a PR for state updates, and do not require signed commits on
+either ruleset. The isolated root commit carries no signature, so a signing rule
+in the unbypassed ruleset permanently blocks branch creation.
 
 For the default branch, require pull requests, `CI / Verify`, and human review.
 Protect automation and policy changes with code-owner or designated maintainer
 review. Do not permit the controller App to bypass these requirements.
+
+```sh
+gh api -X POST "/repos/$repo/rulesets" --input - <<'JSON'
+{
+  "name": "default branch protection",
+  "target": "branch",
+  "enforcement": "active",
+  "bypass_actors": [],
+  "conditions": { "ref_name": { "include": ["~DEFAULT_BRANCH"], "exclude": [] } },
+  "rules": [
+    { "type": "deletion" },
+    { "type": "non_fast_forward" },
+    { "type": "pull_request", "parameters": {
+        "required_approving_review_count": 1,
+        "dismiss_stale_reviews_on_push": true,
+        "require_code_owner_review": true,
+        "require_last_push_approval": true,
+        "required_review_thread_resolution": false } },
+    { "type": "required_status_checks", "parameters": {
+        "strict_required_status_checks_policy": true,
+        "required_status_checks": [{ "context": "CI / Verify" }] } }
+  ]
+}
+JSON
+```
+
+Code-owner review only takes effect once the repository has a `CODEOWNERS` file.
 
 In a dedicated pipeline-only sandbox, also require `SDLC / Complete` and select
 the controller App as its expected source after the first pilot check appears.
@@ -97,6 +166,26 @@ explicit human governance policy, never an automatic App bypass.
 Restrict updates to `agentic/epic-*` branches to the controller where practical.
 Changes made outside a registered job stop automatic integration. Changes after
 the final PR is published do not inherit evidence from its old head commit.
+
+```sh
+gh api -X POST "/repos/$repo/rulesets" --input - <<JSON
+{
+  "name": "agentic epic branches",
+  "target": "branch",
+  "enforcement": "active",
+  "bypass_actors": [{ "actor_id": $app, "actor_type": "Integration", "bypass_mode": "always" }],
+  "conditions": { "ref_name": { "include": ["refs/heads/agentic/epic-*"], "exclude": [] } },
+  "rules": [{ "type": "creation" }, { "type": "update" }]
+}
+JSON
+```
+
+Do not lock deletions on that pattern. A new plan version starts a new branch and
+preserves the previous one, so superseded branches accumulate and need cleanup.
+
+Confirm the result with `gh api "/repos/$repo/rulesets"`. On an organization-owned
+repository, organization rulesets layer on top of these and repository admins
+cannot bypass them; check the organization's rules for conflicting targets.
 
 Disable automatic merge. The prototype only creates a merge-ready PR; it does
 not decide whether humans should merge it.
