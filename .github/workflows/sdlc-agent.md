@@ -36,7 +36,7 @@ permissions:
   issues: read
   pull-requests: read
   actions: read
-  copilot-requests: none
+  copilot-requests: write
 engine: copilot
 timeout-minutes: 30
 max-ai-credits: 200

@@ -4,9 +4,12 @@
 
 - A repository on GitHub.com with Actions enabled and permission to run the
   SHA-pinned actions used by the workflows.
-- A paid Copilot plan and permission to use Copilot CLI for inference. This
-  implementation runs Copilot through Agentic Workflows, not issue assignment
-  to the managed Copilot cloud agent.
+- Copilot inference access. The agent workflow bills inference to an
+  organization's Copilot subscription through the per-run Actions token, which
+  requires an organization-owned repository with centralized Copilot billing.
+  Step 2 describes the personal-account fallback. This implementation runs
+  Copilot through Agentic Workflows, not issue assignment to the managed Copilot
+  cloud agent.
 - CodeQL availability. Private repositories need the appropriate GitHub Code
   Security entitlement. Missing scanner access is a blocking error, not an
   automatically waived security gate.
@@ -46,6 +49,10 @@ Create repository variables:
 
 The App slug is used to authenticate worker runs. It must match the App that
 mints the controller token; it is not the App's human-readable display name.
+The controller compares this variable against the slug of the App it
+authenticates as and fails the run when they differ. Without that check a stale
+value leaves every dispatched worker skipping its own actor gate, stalling the
+lifecycle with no failed run to investigate.
 
 ## 2. Configure Environments
 
@@ -61,17 +68,24 @@ repository-wide secret: candidate workflows must not be able to request it.
 
 ### sdlc-agent
 
-Store `COPILOT_GITHUB_TOKEN` as an environment secret. Use a fine-grained token
-with Copilot Requests access for an eligible user, following the
-[Copilot engine authentication guide](https://github.github.io/gh-aw/engines/copilot/).
-The token authenticates inference; read-only repository access uses the workflow
-token separately.
+This environment holds no secrets. The [agent source](../.github/workflows/sdlc-agent.md)
+sets `permissions.copilot-requests` to `write`, so inference uses the per-run
+Actions token and bills through the organization's Copilot subscription. No
+personal access token is created, stored, or rotated. The environment still
+exists to restrict agent runs to the default branch.
 
-For eligible organization-billed usage, administrators can instead enable the
-required Copilot policies, set `permissions.copilot-requests` to `write` in the
-[agent source](../.github/workflows/sdlc-agent.md), and recompile it. The default
-is explicitly `none`, using the configured Copilot token. Verify billing and
-policy support before switching modes.
+This mode requires an organization-owned repository whose organization has a
+Copilot subscription with centralized billing enabled. Confirm the organization's
+Copilot policies permit it before enabling the controller.
+
+If inference fails with `403`, the Actions token has no Copilot access for that
+organization. To fall back, set `permissions.copilot-requests` to `none`,
+recompile with the pinned compiler, and store `COPILOT_GITHUB_TOKEN` as an
+environment secret here. That fallback needs a fine-grained token owned by a user
+account rather than an organization, with Account permissions then Copilot
+Requests set to read, following the
+[Copilot engine authentication guide](https://github.github.io/gh-aw/engines/copilot/).
+Read-only repository access uses the workflow token in either mode.
 
 The generated workflow uses sandbox containers on GitHub-hosted runners. Docker
 is not a local development requirement. Do not run untrusted candidate tests
