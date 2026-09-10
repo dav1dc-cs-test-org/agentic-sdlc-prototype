@@ -48,7 +48,8 @@
         "REQ-9: All three functions return angles normalised to [0, 360) for inputs that would otherwise produce values at or above 360 or below 0"
       ],
       "dependsOn": [],
-      "completed": false
+      "completed": false,
+      "issueNumber": 3
     },
     {
       "id": "worldclock-render-single",
