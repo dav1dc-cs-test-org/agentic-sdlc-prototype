@@ -33,7 +33,8 @@
         "resolveLocalTime never calls Date.now(), reads process.env, or performs file/network/console I/O; every test passes a fixed literal Date"
       ],
       "dependsOn": [],
-      "completed": false
+      "completed": false,
+      "issueNumber": 2
     },
     {
       "id": "worldclock-geometry",
