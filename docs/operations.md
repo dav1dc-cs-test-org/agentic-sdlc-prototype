@@ -23,8 +23,11 @@ requires a reviewed validator and policy change before enabling agents.
 ## 1. Create a Controller App
 
 Create a GitHub App with webhooks disabled and install it only on this
-repository. No separately hosted App server is required. Give it these repository
-permissions:
+repository. No separately hosted App server is required. Register the App under
+the same account that owns the repository: a private App can only be installed on
+its owner's account, so transferring either the App or the repository later
+uninstalls it and every controller run then fails to mint a token. Give it these
+repository permissions:
 
 | Permission | Access | Purpose |
 | --- | --- | --- |
@@ -59,6 +62,20 @@ lifecycle with no failed run to investigate.
 Create both environments before enabling the controller. Limit deployment
 branches to this repository's default branch. Do not add a required reviewer
 unless you intentionally want a human checkpoint on every job.
+
+Each environment takes two calls: one to enable custom branch policies, one to
+name the branch. Substitute your repository and default branch.
+
+```sh
+repo=OWNER/REPO
+for environment in sdlc-controller sdlc-agent; do
+  gh api -X PUT "/repos/$repo/environments/$environment" --input - <<'JSON'
+{ "deployment_branch_policy": { "protected_branches": false, "custom_branch_policies": true } }
+JSON
+  gh api -X POST "/repos/$repo/environments/$environment/deployment-branch-policies" \
+    -f name=main -f type=branch
+done
+```
 
 ### sdlc-controller
 
@@ -170,6 +187,12 @@ JSON
 ```
 
 Code-owner review only takes effect once the repository has a `CODEOWNERS` file.
+The included [.github/CODEOWNERS](../.github/CODEOWNERS) mirrors the protected
+paths in [policy.json](../.github/sdlc/policy.json), so the surface agents cannot
+touch also cannot reach the default branch unreviewed. Replace the owner handle
+with a maintainer or team in your own account, then confirm GitHub resolves it:
+`gh api "/repos/$repo/codeowners/errors"` reports unknown owners and owners
+without write access, and an unresolvable owner silently disables the rule.
 
 In a dedicated pipeline-only sandbox, also require `SDLC / Complete` and select
 the controller App as its expected source after the first pilot check appears.
@@ -216,10 +239,61 @@ Create the `agentic-SDLC` label in the repository. Optionally use the included
 [issue form](../.github/ISSUE_TEMPLATE/agentic-feature.yml); automatic labels on
 the form still require the label to exist and the labeler to have write access.
 
+```sh
+gh label create agentic-SDLC --repo "$repo" --color B60205 \
+  --description "Approval-gated agentic delivery pipeline"
+```
+
+Harden the repository's Actions defaults. Every workflow here declares explicit
+permissions, so nothing depends on the repository default, but a newly added or
+contributed workflow would otherwise inherit write access and be able to approve
+a pull request.
+
+```sh
+gh api -X PUT "/repos/$repo/actions/permissions/workflow" \
+  -f default_workflow_permissions=read -F can_approve_pull_request_reviews=false
+```
+
+On a public repository, require approval before a fork pull request can run any
+workflow. Approving such a run executes contributed code on your runner. The
+token is read-only and environment secrets stay unreachable, but the compute is
+yours, so read the diff first.
+
+```sh
+gh api -X PUT "/repos/$repo/actions/permissions/fork-pr-contributor-approval" \
+  -f approval_policy=all_external_contributors
+```
+
 Set Actions and inference spending limits. Set `SDLC_ENABLED` to `true` only
 after the environments, App installation, label, and permissions are ready.
 The editor may show unknown-context warnings for the variables and environments
 until those GitHub settings exist.
+
+### Verify before enabling
+
+Scan the baseline with CodeQL and fix what it reports first. CodeQL analyses the
+whole tree and `CI / Verify` does not run it, so any pre-existing finding at
+`security-severity` 7 or above blocks every agent run from the first scan
+onward, and agents cannot clear findings that sit in protected paths.
+
+Then confirm the configuration reports what you expect:
+
+```sh
+gh api "/repos/$repo/actions/variables" --jq '.variables[] | "\(.name)=\(.value)"'
+gh api "/repos/$repo/actions/secrets" --jq '.secrets[].name'
+gh api "/repos/$repo/environments" --jq '.environments[].name'
+gh api "/repos/$repo/environments/sdlc-agent/secrets" --jq '.secrets | length'
+gh api "/repos/$repo/rulesets" --jq '.[].name'
+gh api "/repos/$repo/codeowners/errors" --jq '.errors | length'
+gh api "/repos/$repo/labels" --jq '[.[].name] | index("agentic-SDLC")'
+gh api "/repos/$repo/contents/.github/workflows?ref=main" --jq '.[].name'
+```
+
+`SDLC_APP_PRIVATE_KEY` must not appear in the repository secret list, and the
+`sdlc-agent` environment must hold zero secrets. Candidate workflows can request
+repository secrets; they cannot request another environment's. All four
+workflows must already exist on the default branch, and the codeowners and
+label checks must return `0` and a non-null index respectively.
 
 First intake requires an `issues:labeled` event sent by a human with current
 write access. Schedules and manual dispatches reconcile durable state but do not
