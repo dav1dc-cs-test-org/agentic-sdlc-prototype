@@ -101,7 +101,8 @@
     "taskId": "worldclock-render-single",
     "feedback": "",
     "attempt": 1,
-    "createdAt": "2026-09-11T12:59:40.887Z"
+    "createdAt": "2026-09-11T12:59:40.887Z",
+    "dispatchedAt": "2026-09-11T12:59:42.160Z"
   },
   "evidence": [],
   "processedEvents": [
