@@ -101,7 +101,8 @@
     "taskId": "worldclock-geometry",
     "feedback": "",
     "attempt": 1,
-    "createdAt": "2026-09-11T14:57:55.066Z"
+    "createdAt": "2026-09-11T14:57:55.066Z",
+    "dispatchedAt": "2026-09-11T14:57:56.663Z"
   },
   "evidence": [],
   "processedEvents": [
