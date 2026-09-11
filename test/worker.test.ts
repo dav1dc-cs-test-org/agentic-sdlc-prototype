@@ -41,7 +41,7 @@ test('prepare entry point rejects untrusted workflow identity before creating co
       });
       assert.notEqual(result.status, 0);
       assert.match(result.stderr, /trusted workflow revision under the controller App identity/);
-      assert.equal(result.stderr.includes('api.github.com'), false);
+      assert.doesNotMatch(result.stderr, /api\.github\.com/);
       assert.equal(result.error, undefined);
     }
     assert.throws(() => readFileSync(join(directory, '.sdlc-context.json')), /ENOENT/);
@@ -180,6 +180,8 @@ test('collector includes edits, additions, and deletions without following symli
       { path: 'added.txt', content: 'added' }, { path: 'existing.txt', content: 'after' },
       { path: 'removed.txt', content: null },
     ]);
+    assert.throws(() => collectChanges(directory, sha, 'code', { ...policy, maxChangeBytes: 1 }),
+      /regular text files/);
     symlinkSync('/etc/hosts', join(directory, 'linked.txt'));
     assert.throws(() => collectChanges(directory, sha, 'code', policy), /regular text files/);
   } finally { rmSync(directory, { recursive: true, force: true }); }

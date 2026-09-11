@@ -1,6 +1,6 @@
 import { Octokit } from '@octokit/rest';
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, constants, fstatSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
@@ -38,19 +38,25 @@ export function collectChanges(source: string, sha: string, stage: Stage, policy
     ...git(['ls-files', '--others', '--exclude-standard', '-z']),
   ]);
   const changes: Change[] = [];
+  const unsupported = 'Only bounded regular text files can be collected';
   for (const path of paths) {
     validateChanges([{ path, content: '' }], stage, policy);
     const absolute = resolve(directory, path);
     if (!absolute.startsWith(directory + sep)) throw new Error('File escapes the source checkout');
+    let handle: number | undefined;
     try {
-      const info = lstatSync(absolute);
-      if (!info.isFile() || realpathSync(absolute) !== absolute || info.size > policy.maxChangeBytes) {
-        throw new Error('Only bounded regular text files can be collected');
-      }
-      changes.push({ path, content: new TextDecoder('utf-8', { fatal: true }).decode(readFileSync(absolute)) });
+      // O_NOFOLLOW rejects a swapped symlink, and the descriptor is then the only path-independent view.
+      handle = openSync(absolute, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const info = fstatSync(handle);
+      if (!info.isFile() || info.size > policy.maxChangeBytes) throw new Error(unsupported);
+      changes.push({ path, content: new TextDecoder('utf-8', { fatal: true }).decode(readFileSync(handle)) });
     } catch (error) {
-      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') changes.push({ path, content: null });
+      const code = error instanceof Error && 'code' in error ? error.code : undefined;
+      if (code === 'ENOENT') changes.push({ path, content: null });
+      else if (code === 'ELOOP') throw new Error(unsupported);
       else throw error;
+    } finally {
+      if (handle !== undefined) closeSync(handle);
     }
   }
   validateChanges(changes, stage, policy);
