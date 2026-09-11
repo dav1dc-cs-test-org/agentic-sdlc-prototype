@@ -49,6 +49,7 @@ Create repository variables:
 | `SDLC_APP_ID` | Numeric App ID |
 | `SDLC_APP_SLUG` | App slug, without the `[bot]` suffix |
 | `SDLC_ENABLED` | `false` until all setup and checks are complete |
+| `SDLC_MODEL` | Optional Copilot inference model ID; defaults to `auto` when unset or empty |
 
 The App slug is used to authenticate worker runs. It must match the App that
 mints the controller token; it is not the App's human-readable display name.
@@ -56,6 +57,12 @@ The controller compares this variable against the slug of the App it
 authenticates as and fails the run when they differ. Without that check a stale
 value leaves every dispatched worker skipping its own actor gate, stalling the
 lifecycle with no failed run to investigate.
+
+Configure `SDLC_MODEL` under **Settings > Secrets and variables > Actions >
+Variables** with a model identifier supported by the Copilot runtime and enabled
+for your organization. It applies to all seven SDLC agent stages and gh-aw's
+threat-detection pass. Changes apply to subsequent workflow runs without editing
+or recompiling workflows; remove the variable or leave it empty to restore `auto`.
 
 ## 2. Configure Environments
 

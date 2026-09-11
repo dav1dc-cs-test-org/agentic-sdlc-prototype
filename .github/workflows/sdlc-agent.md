@@ -37,7 +37,9 @@ permissions:
   pull-requests: read
   actions: read
   copilot-requests: write
-engine: copilot
+engine:
+  id: copilot
+  model: ${{ vars.SDLC_MODEL || 'auto' }}
 timeout-minutes: 30
 max-ai-credits: 200
 concurrency:

@@ -329,6 +329,10 @@ The adapter selects the expected worker file from the registered stage:
 - `scan` and `validate` use the
   [deterministic check workflow](../.github/workflows/sdlc-checks.yml).
 
+All seven agent stages select the inference model at workflow runtime from the
+repository variable `SDLC_MODEL`, falling back to `auto` when it is unset or
+empty. The model choice does not change worker permissions or result acceptance.
+
 Acceptance requires the controller App as the run actor, the registered trusted
 workflow commit, the expected job name and workflow, and `run_attempt == 1`.
 The report supplies `jobId` and `inputSha`; stage, task, and plan authority come

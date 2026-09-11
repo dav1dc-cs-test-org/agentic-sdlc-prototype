@@ -52,6 +52,11 @@ preserving the previous branch and state history.
 5. Create a small issue with clear acceptance criteria, then have a repository
   writer apply the `agentic-SDLC` label.
 
+To select the inference model for all SDLC agents, set the repository Actions
+variable `SDLC_MODEL` to a supported Copilot model ID. Unset or empty values
+default to `auto`. Updating this variable affects subsequent workflow runs
+without editing or recompiling workflows.
+
 Initial state is created only from that authorized human `labeled` event. The
 controller binds the request to the event's title and body; scheduled and manual
 reconciliation cannot authorize an issue that was already labeled. If the label

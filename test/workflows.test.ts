@@ -52,6 +52,24 @@ test('generated agents have no publishing credentials or direct write permission
   assert.equal(serialized.includes('"GH_AW_REPORT_INCOMPLETE_CREATE_ISSUE":"false"'), true);
 });
 
+test('agents use the repository model with an auto fallback for inference and metadata', () => {
+  const source = readFileSync('.github/workflows/sdlc-agent.md', 'utf8');
+  const frontmatter = parse(source.split('---')[1]!);
+  const model = "${{ vars.SDLC_MODEL || 'auto' }}";
+  assert.deepEqual(frontmatter.engine, { id: 'copilot', model });
+  const compiled = read('sdlc-agent.lock.yml');
+  for (const [job, variable] of [
+    ['activation', 'GH_AW_INFO_MODEL'],
+    ['agent', 'COPILOT_MODEL'],
+    ['detection', 'COPILOT_MODEL'],
+  ] as const) {
+    const steps = compiled.jobs[job].steps as { env?: Record<string, string> }[];
+    const modelSteps = steps.filter(step => step.env?.[variable] !== undefined);
+    assert.ok(modelSteps.length > 0, `${job} must explicitly select its model`);
+    for (const step of modelSteps) assert.equal(step.env?.[variable], model);
+  }
+});
+
 test('checks cannot pass by silently skipping a required stage', () => {
   const workflow = read('sdlc-checks.yml');
   assert.deepEqual(workflow.jobs.result.needs, ['prepare', 'codeql', 'security', 'tests']);
