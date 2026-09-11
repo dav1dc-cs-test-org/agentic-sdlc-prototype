@@ -30,7 +30,7 @@
     "comment:5635691746",
     "comment:5636167510"
   ],
-  "sequence": 24,
+  "sequence": 25,
   "repairs": 2,
   "failures": 0,
   "feedback": "",
@@ -39,5 +39,16 @@
     "commentId": 5636167510,
     "planHash": "8df09500fc57e7080783e4feee73956e807e1487a8b94aa6b37eae6e247a3126",
     "at": "2026-09-11T14:42:53Z"
+  },
+  "job": {
+    "id": "1-25",
+    "stage": "decompose",
+    "inputSha": "d14a05e508bcd6bcb05b9ffa58ec8748af93e94d",
+    "controlSha": "d14a05e508bcd6bcb05b9ffa58ec8748af93e94d",
+    "planHash": "8df09500fc57e7080783e4feee73956e807e1487a8b94aa6b37eae6e247a3126",
+    "taskId": null,
+    "feedback": "",
+    "attempt": 1,
+    "createdAt": "2026-09-11T14:43:15.235Z"
   }
 }
