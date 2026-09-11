@@ -47,6 +47,7 @@
     "taskId": null,
     "feedback": "",
     "attempt": 1,
-    "createdAt": "2026-09-11T12:40:25.217Z"
+    "createdAt": "2026-09-11T12:40:25.217Z",
+    "dispatchedAt": "2026-09-11T12:40:26.672Z"
   }
 }
