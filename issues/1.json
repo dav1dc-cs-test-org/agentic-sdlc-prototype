@@ -25,8 +25,19 @@
     "comment:5624115713",
     "comment:5633770161"
   ],
-  "sequence": 10,
+  "sequence": 11,
   "repairs": 1,
   "failures": 0,
-  "feedback": "Rebase onto the current default branch. Keep the plan v2 scope unchanged: worldclock-time, worldclock-geometry, worldclock-render-single, worldclock-render-document. No Playwright, no new dependencies."
+  "feedback": "Rebase onto the current default branch. Keep the plan v2 scope unchanged: worldclock-time, worldclock-geometry, worldclock-render-single, worldclock-render-document. No Playwright, no new dependencies.",
+  "job": {
+    "id": "1-11",
+    "stage": "research",
+    "inputSha": "f7ba26ca1746da28a354542f7e344029cec8d7c6",
+    "controlSha": "f7ba26ca1746da28a354542f7e344029cec8d7c6",
+    "planHash": "2453c753e6cd75f2165425bcbd6c77772974f889414bf66d74a179358f5bc6a4",
+    "taskId": null,
+    "feedback": "Rebase onto the current default branch. Keep the plan v2 scope unchanged: worldclock-time, worldclock-geometry, worldclock-render-single, worldclock-render-document. No Playwright, no new dependencies.",
+    "attempt": 1,
+    "createdAt": "2026-09-11T11:31:00.987Z"
+  }
 }
