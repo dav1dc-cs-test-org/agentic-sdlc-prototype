@@ -16,6 +16,19 @@
   },
   "tasks": [],
   "retiredTasks": [],
+  "job": {
+    "id": "1-16",
+    "stage": "research",
+    "inputSha": "237364201e36efe5db5cb6fed2687ca3a775c5dc",
+    "controlSha": "237364201e36efe5db5cb6fed2687ca3a775c5dc",
+    "planHash": "698f94b8cdc07e5aa9d982e798b9fdb262389443ae703b1adb0c0e5af9661739",
+    "taskId": null,
+    "feedback": "Rebase onto the current default branch. Keep the plan v2 scope unchanged: worldclock-time, worldclock-geometry, worldclock-render-single, worldclock-render-document. No Playwright, no new dependencies.",
+    "attempt": 1,
+    "createdAt": "2026-09-11T12:10:01.143Z",
+    "dispatchedAt": "2026-09-11T12:10:02.741Z",
+    "runId": 34597534741
+  },
   "evidence": [],
   "processedEvents": [
     "comment:5623779192",
@@ -30,17 +43,5 @@
   "sequence": 16,
   "repairs": 1,
   "failures": 0,
-  "feedback": "Rebase onto the current default branch. Keep the plan v2 scope unchanged: worldclock-time, worldclock-geometry, worldclock-render-single, worldclock-render-document. No Playwright, no new dependencies.",
-  "job": {
-    "id": "1-16",
-    "stage": "research",
-    "inputSha": "237364201e36efe5db5cb6fed2687ca3a775c5dc",
-    "controlSha": "237364201e36efe5db5cb6fed2687ca3a775c5dc",
-    "planHash": "698f94b8cdc07e5aa9d982e798b9fdb262389443ae703b1adb0c0e5af9661739",
-    "taskId": null,
-    "feedback": "Rebase onto the current default branch. Keep the plan v2 scope unchanged: worldclock-time, worldclock-geometry, worldclock-render-single, worldclock-render-document. No Playwright, no new dependencies.",
-    "attempt": 1,
-    "createdAt": "2026-09-11T12:10:01.143Z",
-    "dispatchedAt": "2026-09-11T12:10:02.741Z"
-  }
+  "feedback": "Rebase onto the current default branch. Keep the plan v2 scope unchanged: worldclock-time, worldclock-geometry, worldclock-render-single, worldclock-render-document. No Playwright, no new dependencies."
 }
