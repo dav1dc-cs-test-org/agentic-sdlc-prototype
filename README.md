@@ -24,7 +24,9 @@ flowchart TD
   testing -->|Tests changed| scans
   testing -->|No changes| validation[Execute tests and compare coverage]
   security -->|Tests already prepared| validation
-  validation --> review[Independent review agent]
+  validation --> documentation[Documentation agent]
+  documentation -->|Docs changed| scans
+  documentation -->|No changes| review[Independent review agent]
   review --> publication[Final PR and advisory review]
   publication --> human[Human review and merge]
   scans -->|Findings| coding

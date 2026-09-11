@@ -30,7 +30,7 @@ on:
         description: Registered agent stage
         required: true
         type: choice
-        options: [research, decompose, code, security, test, review]
+        options: [research, decompose, code, security, test, document, review]
 permissions:
   contents: read
   issues: read

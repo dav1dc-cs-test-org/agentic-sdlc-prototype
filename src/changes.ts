@@ -6,6 +6,10 @@ export function isTestPath(path: string, policy: Policy): boolean {
   return policy.testPaths.some(pattern => posix.matchesGlob(path, pattern));
 }
 
+export function isDocsPath(path: string, policy: Policy): boolean {
+  return policy.docsPaths.some(pattern => posix.matchesGlob(path, pattern));
+}
+
 export function isProtectedPath(path: string, policy: Policy): boolean {
   const normalized = path.toLowerCase();
   return normalized.startsWith('.github/') || normalized.startsWith('.sdlc') ||
@@ -14,7 +18,7 @@ export function isProtectedPath(path: string, policy: Policy): boolean {
 }
 
 export function validateChanges(changes: Change[], stage: Stage, policy: Policy): void {
-  if (!['code', 'test'].includes(stage) && changes.length) throw new Error('Read-only stage proposed changes');
+  if (!['code', 'test', 'document'].includes(stage) && changes.length) throw new Error('Read-only stage proposed changes');
   if (changes.length > policy.maxFiles) throw new Error('Changed-file budget exceeded');
   const seen = new Set<string>();
   const prefixes = new Map<string, string>();
@@ -41,6 +45,9 @@ export function validateChanges(changes: Change[], stage: Stage, policy: Policy)
     }
     if (isProtectedPath(path, policy)) throw new Error(`Protected file: ${path}`);
     if (stage === 'test' && !isTestPath(path, policy)) throw new Error('Testing agent may only change tests');
+    if (stage === 'document' && !isDocsPath(path, policy)) {
+      throw new Error('Documentation agent may only change documentation');
+    }
     if (change.content?.includes('\0')) throw new Error('Binary files are not supported');
     bytes += Buffer.byteLength(change.content ?? '', 'utf8');
     if (bytes > policy.maxChangeBytes) throw new Error('Change-size budget exceeded');

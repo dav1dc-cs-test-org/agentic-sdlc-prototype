@@ -87,8 +87,8 @@ test('publication requires every task and all gate evidence on the final commit'
   state.headSha = finalSha;
   state.tasks.forEach(task => { task.completed = true; });
   assert.throws(() => assertPublishable(state), /scan/);
-  state.evidence = ['scan', 'security', 'test', 'validate', 'review'].map(stage => ({
-    stage: stage as 'scan' | 'security' | 'test' | 'validate' | 'review', sha: finalSha,
+  state.evidence = ['scan', 'security', 'test', 'validate', 'document', 'review'].map(stage => ({
+    stage: stage as 'scan' | 'security' | 'test' | 'validate' | 'document' | 'review', sha: finalSha,
     jobId: `123-${stage}`, runId: 1, summary: 'Pass',
   }));
   assert.doesNotThrow(() => assertPublishable(state));

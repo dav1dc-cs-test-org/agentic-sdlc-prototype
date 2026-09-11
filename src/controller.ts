@@ -46,7 +46,7 @@ export interface Platform {
 
 const stages: Partial<Record<Phase, Stage>> = {
   researching: 'research', decomposing: 'decompose', coding: 'code', scanning: 'scan',
-  security: 'security', testing: 'test', validating: 'validate', reviewing: 'review',
+  security: 'security', testing: 'test', validating: 'validate', documenting: 'document', reviewing: 'review',
 };
 const terminalPhases: Phase[] = ['cancelled', 'merged'];
 
@@ -375,7 +375,8 @@ export class Controller {
       if (job.stage === 'security') state.phase = state.evidence.some(item => item.stage === 'test' && item.sha === state.headSha)
         ? 'validating' : 'testing';
       if (job.stage === 'test') state.phase = report.changes.length ? 'scanning' : 'validating';
-      if (job.stage === 'validate') state.phase = 'reviewing';
+      if (job.stage === 'validate') state.phase = 'documenting';
+      if (job.stage === 'document') state.phase = report.changes.length ? 'scanning' : 'reviewing';
       if (job.stage === 'review') state.phase = 'publishing';
     }
     await this.platform.save(record);

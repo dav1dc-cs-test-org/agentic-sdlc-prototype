@@ -75,7 +75,7 @@ test('manual workflows pin actions to immutable commits and never persist git cr
 
 test('every agent stage has a valid repository-scoped role profile', () => {
   const files = readdirSync('.github/agents');
-  for (const stage of ['research', 'decompose', 'code', 'security', 'test', 'review']) {
+  for (const stage of ['research', 'decompose', 'code', 'security', 'test', 'document', 'review']) {
     assert.ok(files.includes(`${stage}.agent.md`));
     const profile = parse(readFileSync(`.github/agents/${stage}.agent.md`, 'utf8').split('---')[1]!);
     assert.ok(profile.description.length > 30);

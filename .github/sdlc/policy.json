@@ -17,5 +17,6 @@
   ],
   "testPaths": ["test/**/*.test.ts"],
   "sourcePaths": ["src/**/*.ts"],
+  "docsPaths": ["docs/**/*.md", "README.md"],
   "coverage": { "lines": 80, "branches": 70, "maxDrop": 0 }
 }

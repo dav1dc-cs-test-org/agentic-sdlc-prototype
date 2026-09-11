@@ -42,7 +42,7 @@ function publishable() {
   state.job = undefined;
   state.headSha = newSha;
   state.tasks = [{ id: 'feature', title: 'Feature', description: 'Feature', acceptance: ['Works'], dependsOn: [], completed: true }];
-  state.evidence = ['scan', 'security', 'test', 'validate', 'review'].map(stage => ({
+  state.evidence = ['scan', 'security', 'test', 'validate', 'document', 'review'].map(stage => ({
     stage: stage as 'scan' | 'security' | 'test' | 'validate' | 'review', sha: newSha,
     jobId: `123-${stage}`, runId: 1, summary: 'Verified',
   }));
@@ -329,7 +329,7 @@ test('final PR, advisory review, and commit check are idempotent and reference t
   state.plan = makePlan('Approved plan. Fixes #455.', 0);
   state.approval = approvePlan({ phase: 'awaiting_approval', plan: state.plan, version: 1,
     authorized: true, actor: 'requester', commentId: 1, at: '2026-09-08T12:00:00Z' });
-  state.evidence = ['scan', 'security', 'test', 'validate', 'review'].map(stage => ({
+  state.evidence = ['scan', 'security', 'test', 'validate', 'document', 'review'].map(stage => ({
     stage: stage as 'scan' | 'security' | 'test' | 'validate' | 'review', sha: newSha,
     jobId: `123-${stage}`, runId: 1, summary: 'Verified. Closes owner/repo#456.',
   }));

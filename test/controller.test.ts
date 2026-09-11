@@ -179,7 +179,7 @@ test('complete lifecycle rescans test changes and publishes exactly one final PR
   assert.equal(platform.stored!.state.job!.stage, 'test');
   platform.finish({ changes: [{ path: 'test/feature.test.ts', content: 'A real regression test' }] });
   await controller.tick(123);
-  for (const stage of ['scan', 'security', 'validate', 'review']) {
+  for (const stage of ['scan', 'security', 'validate', 'document', 'review']) {
     assert.equal(platform.published, 0);
     assert.equal(platform.stored!.state.job!.stage, stage);
     platform.finish();
@@ -230,13 +230,14 @@ test('late review findings invalidate evidence and force every gate after a no-c
   await controller.tick(123);
   platform.finish({ changes: [{ path: 'feature.txt', content: 'Complete' }] });
   await controller.tick(123);
-  for (const stage of ['scan', 'security', 'test', 'validate']) {
+  for (const stage of ['scan', 'security', 'test', 'validate', 'document']) {
     assert.equal(platform.stored!.state.job!.stage, stage);
     platform.finish();
     await controller.tick(123);
   }
   assert.equal(platform.stored!.state.job!.stage, 'review');
-  assert.deepEqual(platform.stored!.state.evidence.map(item => item.stage), ['scan', 'security', 'test', 'validate']);
+  assert.deepEqual(platform.stored!.state.evidence.map(item => item.stage),
+    ['scan', 'security', 'test', 'validate', 'document']);
   platform.finish({ outcome: 'changes_requested', summary: 'Repair the late review finding' });
   await controller.tick(123);
   assert.equal(platform.stored!.state.job!.stage, 'code');
@@ -246,14 +247,42 @@ test('late review findings invalidate evidence and force every gate after a no-c
   platform.finish();
   await controller.tick(123);
   const rerun: string[] = [];
-  for (const stage of ['scan', 'security', 'test', 'validate', 'review']) {
+  for (const stage of ['scan', 'security', 'test', 'validate', 'document', 'review']) {
     assert.equal(platform.stored!.state.job!.stage, stage);
     rerun.push(platform.stored!.state.job!.stage);
     platform.finish();
     await controller.tick(123);
     if (stage !== 'review') assert.equal(platform.published, 0);
   }
-  assert.deepEqual(rerun, ['scan', 'security', 'test', 'validate', 'review']);
+  assert.deepEqual(rerun, ['scan', 'security', 'test', 'validate', 'document', 'review']);
+  assert.equal(platform.published, 1);
+});
+
+test('documentation changes invalidate gate evidence and re-verify before review', async () => {
+  const { platform, controller } = await coding();
+  platform.finish({ changes: [{ path: 'feature.txt', content: 'First' }] });
+  await controller.tick(123);
+  platform.finish({ changes: [{ path: 'feature.txt', content: 'Both tasks' }] });
+  await controller.tick(123);
+  for (const stage of ['scan', 'security', 'test', 'validate']) {
+    assert.equal(platform.stored!.state.job!.stage, stage);
+    platform.finish();
+    await controller.tick(123);
+  }
+  assert.equal(platform.stored!.state.job!.stage, 'document');
+  platform.finish({ changes: [{ path: 'docs/architecture.md', content: 'Documented behaviour' }] });
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.phase, 'scanning');
+  assert.deepEqual(platform.stored!.state.evidence.map(item => item.stage), ['document']);
+  for (const stage of ['scan', 'security', 'test', 'validate', 'document']) {
+    assert.equal(platform.stored!.state.job!.stage, stage);
+    assert.equal(platform.published, 0);
+    platform.finish();
+    await controller.tick(123);
+  }
+  assert.equal(platform.stored!.state.job!.stage, 'review');
+  platform.finish();
+  await controller.tick(123);
   assert.equal(platform.published, 1);
 });
 

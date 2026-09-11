@@ -6,10 +6,10 @@ const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const numberSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 // Validation must never rewrite stored text: persisted plan hashes are computed over the exact body.
 const text = z.string().min(1).regex(/\S/);
-export const stageSchema = z.enum(['research', 'decompose', 'code', 'scan', 'security', 'test', 'validate', 'review']);
+export const stageSchema = z.enum(['research', 'decompose', 'code', 'scan', 'security', 'test', 'validate', 'document', 'review']);
 export const phaseSchema = z.enum([
   'researching', 'awaiting_approval', 'decomposing', 'coding', 'scanning', 'security',
-  'testing', 'validating', 'reviewing', 'publishing', 'pr_open', 'merged', 'blocked', 'paused', 'cancelled',
+  'testing', 'validating', 'documenting', 'reviewing', 'publishing', 'pr_open', 'merged', 'blocked', 'paused', 'cancelled',
 ]);
 
 export const taskSchema = z.object({
@@ -43,7 +43,7 @@ export const policySchema = z.object({
   jobTimeoutMinutes: numberSchema.max(180), dispatchGraceMinutes: numberSchema.max(30),
   maxFiles: numberSchema.max(60), maxChangeBytes: numberSchema.max(1_000_000),
   protectedPaths: z.array(text).min(1), testPaths: z.array(text).min(1),
-  sourcePaths: z.array(text).min(1),
+  sourcePaths: z.array(text).min(1), docsPaths: z.array(text).min(1),
   coverage: z.object({
     lines: z.number().min(1).max(100), branches: z.number().min(1).max(100),
     maxDrop: z.number().min(0).max(5),

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 export type Phase =
   | 'researching' | 'awaiting_approval' | 'decomposing' | 'coding'
-  | 'scanning' | 'security' | 'testing' | 'validating' | 'reviewing' | 'publishing'
+  | 'scanning' | 'security' | 'testing' | 'validating' | 'documenting' | 'reviewing' | 'publishing'
   | 'pr_open' | 'merged' | 'blocked' | 'paused' | 'cancelled';
 
 export interface Plan {

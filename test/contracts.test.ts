@@ -62,6 +62,11 @@ test('publisher rejects traversal, protected configuration, and case collisions'
 test('stage permissions and output budgets are enforced by code', () => {
   assert.doesNotThrow(() => validateChanges([{ path: 'test/new.test.ts', content: 'test' }], 'test', policy));
   assert.throws(() => validateChanges([{ path: 'README.md', content: 'text' }], 'test', policy), /only change tests/);
+  assert.doesNotThrow(() => validateChanges([{ path: 'README.md', content: 'text' },
+    { path: 'docs/architecture.md', content: 'text' }, { path: 'docs/adr/0001-choice.md', content: 'text' }],
+    'document', policy));
+  for (const path of ['src/feature/clock.ts', 'test/new.test.ts', 'notes.md'])
+    assert.throws(() => validateChanges([{ path, content: 'text' }], 'document', policy), /only change documentation/);
   assert.throws(() => validateChanges([{ path: 'README.md', content: 'text' }], 'security', policy), /Read-only/);
   assert.throws(() => validateChanges([{ path: 'README.md', content: '\0' }], 'code', policy), /Binary/);
   assert.throws(() => validateChanges([{ path: 'README.md', content: 'too much' }], 'code',

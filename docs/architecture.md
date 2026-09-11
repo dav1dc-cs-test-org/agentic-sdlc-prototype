@@ -139,6 +139,8 @@ flowchart TD
         ProcTestChanges["Testing agent proposed file changes"]
         ProcPublishTests["Publish tests and invalidate older evidence"]
         ProcValidate["validating: execute tests and measure coverage"]
+        ProcDocument["documenting: reconcile docs with verified behaviour"]
+        ProcDocChanges["Documentation agent proposed file changes"]
         ProcReview["reviewing: assess full feature and evidence"]
     end
     ProcRepair["Record findings and increment repair counter"]
@@ -167,12 +169,16 @@ flowchart TD
     ProcTest -->|"Pass"| ProcTestChanges
     ProcTestChanges -->|"Yes"| ProcPublishTests --> ProcScan
     ProcTestChanges -->|"No"| ProcValidate
-    ProcValidate -->|"Pass"| ProcReview
+    ProcValidate -->|"Pass"| ProcDocument
+    ProcDocument -->|"Pass"| ProcDocChanges
+    ProcDocChanges -->|"Yes"| ProcScan
+    ProcDocChanges -->|"No"| ProcReview
     ProcReview -->|"Pass"| ProcPublish
     ProcScan -->|"Changes requested"| ProcRepair
     ProcSecurity -->|"Changes requested"| ProcRepair
     ProcTest -->|"Changes requested"| ProcRepair
     ProcValidate -->|"Changes requested"| ProcRepair
+    ProcDocument -->|"Changes requested"| ProcRepair
     ProcReview -->|"Changes requested"| ProcRepair
     ProcRepair -->|"Automatic repair budget remains"| ProcSelect
     ProcRepair -->|"Budget exhausted"| ProcBlocked
@@ -237,9 +243,10 @@ sequenceDiagram
     else Human approves the displayed plan
     ApHuman->>ApIssue: New standalone /sdlc approve vN comment
     ApIssue-)ApControl: New comment event
-    ApControl->>ApControl: Check author, version, hash, and issue text
+    ApControl->>ApControl: Check author, version, hash, issue text, and trusted revision
         alt Approval is valid
       ApControl->>ApState: Bind actor and comment to plan hash
+      ApControl->>ApState: Repin the base to the approved revision
       ApControl->>ApState: Persist decomposing and register next job
         else Command is stale or invalid
       ApControl->>ApIssue: Reject command without starting implementation
@@ -259,8 +266,10 @@ event, the event snapshot remains authoritative and execution blocks before a
 worker is dispatched. A revision snapshots the current issue and default branch, invalidates the
 active job, clears approval and evidence, retires existing tasks as not planned,
 and chooses a new versioned feature branch. Older branches are retained.
-An edited issue or changed default branch requires replanning before execution
-can continue; `/sdlc retry` does not authorize changed scope.
+An edited issue requires replanning before execution can continue, as does any
+default-branch movement that touches a protected path. Movement outside those
+paths is adopted between jobs instead of blocking. `/sdlc retry` does not
+authorize changed scope.
 
 ## Worker Handoff
 
@@ -297,7 +306,7 @@ sequenceDiagram
   HwArtifacts-->>HwControl: Untrusted result JSON
   HwControl->>HwControl: Check schema, current job, plan, source, and policy
     alt Accepted pass result
-        opt Code or testing stage proposes text changes
+        opt Coding, testing, or documentation stage proposes text changes
       HwControl->>HwBranch: Validate tree and publish without force
       HwBranch-->>HwControl: Accepted commit SHA
       HwControl->>HwControl: Invalidate older evidence
@@ -312,8 +321,8 @@ sequenceDiagram
 
 The adapter selects the expected worker file from the registered stage:
 
-- `research`, `decompose`, `code`, `security`, `test`, and `review` use the
-  [compiled agent workflow](../.github/workflows/sdlc-agent.lock.yml).
+- `research`, `decompose`, `code`, `security`, `test`, `document`, and `review`
+  use the [compiled agent workflow](../.github/workflows/sdlc-agent.lock.yml).
 - `scan` and `validate` use the
   [deterministic check workflow](../.github/workflows/sdlc-checks.yml).
 
@@ -433,7 +442,7 @@ flowchart TD
     RecoveryFindings -->|"Repair budget exhausted"| RecoveryBlocked
     RecoveryCode --> RecoveryActive
     RecoveryActive -->|"Explicit blocked report or total job limit"| RecoveryBlocked
-    RecoveryActive -->|"Issue or default-branch revision changed"| RecoveryBlocked
+    RecoveryActive -->|"Issue or trusted revision changed"| RecoveryBlocked
     RecoveryBlocked -->|"Writer retries after resolving cause"| RecoveryRetry
     RecoveryBlocked -->|"Changed scope needs revision"| RecoveryRevise
     RecoveryPaused -->|"Authorized revision command"| RecoveryRevise
@@ -515,7 +524,7 @@ flowchart LR
     ComponentController -->|"Validate results"| ComponentContracts
     ComponentController -->|"Restrict proposed changes"| ComponentChanges
     ComponentGitHub -->|"Parse stored state and artifacts"| ComponentContracts
-    ComponentGitHub -->|"Validate before branch writes"| ComponentChanges
+    ComponentGitHub -->|"Validate writes and compare trusted paths"| ComponentChanges
     ComponentWorker -->|"Read registered lifecycle"| ComponentGitHub
     ComponentWorker -->|"Check approval integrity"| ComponentLifecycle
     ComponentWorker -->|"Validate job inputs and reports"| ComponentContracts
@@ -592,7 +601,7 @@ Before creating the final PR, the controller requires:
 1. An intact plan whose hash matches the recorded human approval.
 2. Phase `publishing`, no active job, and at least one task.
 3. Every task marked implemented and a head commit different from the baseline.
-4. Accepted `scan`, `security`, `test`, `validate`, and `review` evidence on the
+4. Accepted `scan`, `security`, `test`, `validate`, `document`, and `review` evidence on the
    exact candidate head SHA.
 5. The working branch still pointing to that reviewed commit.
 

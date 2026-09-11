@@ -1,6 +1,6 @@
 import { digest, type Approval, type Phase, type Plan } from './domain.ts';
 
-export type Stage = 'research' | 'decompose' | 'code' | 'scan' | 'security' | 'test' | 'validate' | 'review';
+export type Stage = 'research' | 'decompose' | 'code' | 'scan' | 'security' | 'test' | 'validate' | 'document' | 'review';
 
 export interface Task {
   id: string;
@@ -108,7 +108,8 @@ export function startJob(state: Lifecycle, stage: Stage, at: string): Job {
   if (state.job) throw new Error('A job is already active');
   const phases: Record<Stage, Phase> = {
     research: 'researching', decompose: 'decomposing', code: 'coding',
-    scan: 'scanning', security: 'security', test: 'testing', validate: 'validating', review: 'reviewing',
+    scan: 'scanning', security: 'security', test: 'testing', validate: 'validating',
+    document: 'documenting', review: 'reviewing',
   };
   if (state.phase !== phases[stage]) throw new Error('Stage does not match lifecycle phase');
   if (stage !== 'research') assertApproved(state);
@@ -162,7 +163,7 @@ export function assertPublishable(state: Lifecycle): void {
       state.tasks.some(task => !task.completed) || state.headSha === state.baseSha) {
     throw new Error('Lifecycle is not ready for publication');
   }
-  for (const stage of ['scan', 'security', 'test', 'validate', 'review'] as const) {
+  for (const stage of ['scan', 'security', 'test', 'validate', 'document', 'review'] as const) {
     if (!state.evidence.some(item => item.stage === stage && item.sha === state.headSha)) {
       throw new Error(`Missing current ${stage} evidence`);
     }

@@ -14,6 +14,13 @@
   candidate code in a job that has the controller App token or private key.
 - Preserve state-write concurrency checks and idempotent side effects. Add
   regression tests for retries, interruption, stale results, and authorization.
+- Update README.md and the affected docs in the same commit when stages, phases,
+  policy, workflows, permissions, or trust boundaries change. The pipeline's own
+  documentation stage cannot cover this: protected paths are edited directly.
+- Re-read every Mermaid diagram in docs/architecture.md against the change, not
+  only the one that looks relevant. Edge labels and sequence steps that state a
+  rule go stale silently. Validate with `mmdc --input <file> --output
+  <tmp>/preview.md --outputFormat svg`, run outside the repository.
 - Never lower coverage or security thresholds to accommodate a failing change.
   Do not automatically waive scanner findings or skip required checks.
 - Do not push, create live resources, change GitHub settings, or expose secrets
