@@ -38,6 +38,7 @@
     "taskId": null,
     "feedback": "Rebase onto the current default branch. Keep the plan v2 scope unchanged: worldclock-time, worldclock-geometry, worldclock-render-single, worldclock-render-document. No Playwright, no new dependencies.",
     "attempt": 1,
-    "createdAt": "2026-09-11T11:31:00.987Z"
+    "createdAt": "2026-09-11T11:31:00.987Z",
+    "dispatchedAt": "2026-09-11T11:31:02.051Z"
   }
 }
