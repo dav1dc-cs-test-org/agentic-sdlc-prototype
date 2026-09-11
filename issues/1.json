@@ -102,7 +102,8 @@
     "feedback": "",
     "attempt": 1,
     "createdAt": "2026-09-11T13:15:09.248Z",
-    "dispatchedAt": "2026-09-11T13:15:10.522Z"
+    "dispatchedAt": "2026-09-11T13:15:10.522Z",
+    "runId": 34603252254
   },
   "evidence": [],
   "processedEvents": [
