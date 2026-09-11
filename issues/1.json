@@ -34,8 +34,8 @@
         "Function contains no Date.now(), process.env, or file/network/console I/O calls."
       ],
       "dependsOn": [],
-      "completed": false,
-      "issueNumber": 10
+      "issueNumber": 10,
+      "completed": false
     },
     {
       "id": "worldclock-geometry",
@@ -50,8 +50,8 @@
         "New tests added under test/**/*.test.ts covering each formula and boundary/normalisation cases using node:assert/strict and node:test."
       ],
       "dependsOn": [],
-      "completed": false,
-      "issueNumber": 11
+      "issueNumber": 11,
+      "completed": false
     },
     {
       "id": "worldclock-render-single",
@@ -68,8 +68,8 @@
         "worldclock-time",
         "worldclock-geometry"
       ],
-      "completed": false,
-      "issueNumber": 12
+      "issueNumber": 12,
+      "completed": false
     },
     {
       "id": "worldclock-render-document",
@@ -86,10 +86,11 @@
       "dependsOn": [
         "worldclock-render-single"
       ],
-      "completed": false,
-      "issueNumber": 13
+      "issueNumber": 13,
+      "completed": false
     }
   ],
+  "tasksLinked": true,
   "retiredTasks": [],
   "job": {
     "id": "1-18",
@@ -101,7 +102,8 @@
     "feedback": "",
     "attempt": 1,
     "createdAt": "2026-09-11T12:46:44.051Z",
-    "dispatchedAt": "2026-09-11T12:46:45.413Z"
+    "dispatchedAt": "2026-09-11T12:46:45.413Z",
+    "runId": 34600692262
   },
   "evidence": [],
   "processedEvents": [
@@ -118,6 +120,5 @@
   "sequence": 18,
   "repairs": 1,
   "failures": 0,
-  "feedback": "",
-  "tasksLinked": true
+  "feedback": ""
 }
