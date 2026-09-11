@@ -108,5 +108,6 @@
   "sequence": 25,
   "repairs": 2,
   "failures": 0,
-  "feedback": ""
+  "feedback": "",
+  "tasksLinked": true
 }
