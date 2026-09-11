@@ -104,5 +104,6 @@
   "repairs": 1,
   "failures": 0,
   "feedback": "",
-  "resumePhase": "coding"
+  "resumePhase": "coding",
+  "error": "The default branch changed. Use /sdlc revise <feedback> to replan against its new revision."
 }
