@@ -29,8 +29,19 @@
     "comment:5634566477",
     "comment:5635691746"
   ],
-  "sequence": 23,
+  "sequence": 24,
   "repairs": 2,
   "failures": 0,
-  "feedback": "Rebase onto the current default branch. Keep the approved scope unchanged: worldclock-time, worldclock-geometry, worldclock-render-single, worldclock-render-document. No Playwright, no new dependencies."
+  "feedback": "Rebase onto the current default branch. Keep the approved scope unchanged: worldclock-time, worldclock-geometry, worldclock-render-single, worldclock-render-document. No Playwright, no new dependencies.",
+  "job": {
+    "id": "1-24",
+    "stage": "research",
+    "inputSha": "d14a05e508bcd6bcb05b9ffa58ec8748af93e94d",
+    "controlSha": "d14a05e508bcd6bcb05b9ffa58ec8748af93e94d",
+    "planHash": "dff7cddbd01bba9068b74383ad9b902f591ff5c9bd698a574e5076fb38fbfc3d",
+    "taskId": null,
+    "feedback": "Rebase onto the current default branch. Keep the approved scope unchanged: worldclock-time, worldclock-geometry, worldclock-render-single, worldclock-render-document. No Playwright, no new dependencies.",
+    "attempt": 1,
+    "createdAt": "2026-09-11T14:10:56.060Z"
+  }
 }
