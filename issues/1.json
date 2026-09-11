@@ -50,7 +50,8 @@
         "All geometry functions are pure with no I/O and no dependency on Date.now(), process.env, or external state."
       ],
       "dependsOn": [],
-      "completed": false
+      "completed": false,
+      "issueNumber": 7
     },
     {
       "id": "worldclock-render-single",
