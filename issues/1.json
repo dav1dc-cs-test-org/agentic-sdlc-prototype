@@ -34,8 +34,8 @@
         "New tests live under test/**/*.test.ts and do not modify any existing baseline test."
       ],
       "dependsOn": [],
-      "completed": false,
-      "issueNumber": 14
+      "issueNumber": 14,
+      "completed": false
     },
     {
       "id": "worldclock-geometry",
@@ -50,8 +50,8 @@
         "New tests live under test/**/*.test.ts and do not modify any existing baseline test."
       ],
       "dependsOn": [],
-      "completed": false,
-      "issueNumber": 15
+      "issueNumber": 15,
+      "completed": false
     },
     {
       "id": "worldclock-render-single",
@@ -68,8 +68,8 @@
         "worldclock-time",
         "worldclock-geometry"
       ],
-      "completed": false,
-      "issueNumber": 16
+      "issueNumber": 16,
+      "completed": false
     },
     {
       "id": "worldclock-render-document",
@@ -86,10 +86,11 @@
       "dependsOn": [
         "worldclock-render-single"
       ],
-      "completed": false,
-      "issueNumber": 17
+      "issueNumber": 17,
+      "completed": false
     }
   ],
+  "tasksLinked": true,
   "retiredTasks": [],
   "job": {
     "id": "1-26",
@@ -101,7 +102,8 @@
     "feedback": "",
     "attempt": 1,
     "createdAt": "2026-09-11T14:50:49.929Z",
-    "dispatchedAt": "2026-09-11T14:50:51.441Z"
+    "dispatchedAt": "2026-09-11T14:50:51.441Z",
+    "runId": 34612576530
   },
   "evidence": [],
   "processedEvents": [
@@ -120,6 +122,5 @@
   "sequence": 26,
   "repairs": 2,
   "failures": 0,
-  "feedback": "",
-  "tasksLinked": true
+  "feedback": ""
 }
