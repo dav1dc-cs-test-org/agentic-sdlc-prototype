@@ -101,7 +101,8 @@
     "taskId": null,
     "feedback": "",
     "attempt": 1,
-    "createdAt": "2026-09-11T15:22:48.649Z"
+    "createdAt": "2026-09-11T15:22:48.649Z",
+    "dispatchedAt": "2026-09-11T15:22:49.846Z"
   },
   "evidence": [
     {
