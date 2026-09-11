@@ -26,11 +26,13 @@ class FakePlatform implements Platform {
   closedTasks = 0;
   retired: number[] = [];
   baselineSha = baseSha;
+  trustedChange = false;
   disposition: 'open' | 'closed' | 'merged' = 'open';
   async issue() { return this.input; }
   async comments() { return this.messages; }
   async canWrite(actor: string) { return actor === 'maintainer'; }
   async baseline() { return { branch: 'main', sha: this.baselineSha }; }
+  async trustedPathsChanged(from: string, to: string) { return from !== to && this.trustedChange; }
   // Mirrors GitHub.save/GitHub.load exactly: raw JSON on write, schema-validated on read.
   async load() {
     return this.raw === undefined ? undefined :
@@ -269,15 +271,49 @@ test('pause discards in-flight results; only a maintainer can resume', async () 
   assert.notEqual(platform.stored!.state.job!.id, job.id);
 });
 
-test('issue edits and default branch drift stop execution until replanning', async () => {
+test('issue edits and trusted revision drift stop execution until replanning', async () => {
   const first = await coding();
   first.platform.input.body = 'Changed scope';
   await first.controller.tick(123);
   assert.equal(first.platform.stored!.state.phase, 'blocked');
   const second = await coding();
   second.platform.baselineSha = 'f'.repeat(40);
+  second.platform.trustedChange = true;
   await second.controller.tick(123);
   assert.equal(second.platform.stored!.state.phase, 'blocked');
+});
+
+test('default branch movement outside trusted paths is adopted instead of blocking', async () => {
+  const { platform, controller } = await coding();
+  const moved = 'f'.repeat(40);
+  platform.baselineSha = moved;
+  platform.finish({ changes: [{ path: 'feature.txt', content: 'First' }] });
+  await controller.tick(123);
+  const state = platform.stored!.state;
+  assert.notEqual(state.phase, 'blocked');
+  assert.equal(state.controlSha, moved);
+  assert.equal(state.job!.controlSha, moved);
+});
+
+test('approval pins the plan to the revision it is approved against', async () => {
+  const moved = 'f'.repeat(40);
+  const adopted = await planned();
+  adopted.platform.baselineSha = moved;
+  adopted.platform.reply('/sdlc approve v1');
+  await adopted.controller.tick(123);
+  const state = adopted.platform.stored!.state;
+  assert.equal(state.phase, 'decomposing');
+  assert.equal(state.baseSha, moved);
+  assert.equal(state.headSha, moved);
+  assert.equal(state.controlSha, moved);
+
+  const rejected = await planned();
+  rejected.platform.baselineSha = moved;
+  rejected.platform.trustedChange = true;
+  rejected.platform.reply('/sdlc approve v1');
+  await rejected.controller.tick(123);
+  assert.equal(rejected.platform.stored!.state.phase, 'awaiting_approval');
+  assert.match([...rejected.platform.outputs.values()].join('\n'), /trusted revision changed/);
 });
 
 test('untrusted worker output cannot publish policy changes or skip stages', async () => {

@@ -567,9 +567,22 @@ the branch is created lazily when the first accepted text change is published.
 | `job.inputSha` | Source commit supplied to a particular worker |
 | `job.runId` | Accepted GitHub run for the registered job |
 
-At initialization and replanning, baseline and controller SHAs are captured
-from the default branch. They remain fixed while the candidate head advances.
-Dispatch inputs carry the issue, job, stage, candidate SHA, and controller SHA.
+At initialization, approval, and replanning, baseline and controller SHAs are
+captured from the default branch. `baseSha` then remains fixed while the
+candidate head advances. Dispatch inputs carry the issue, job, stage, candidate
+SHA, and controller SHA.
+
+`controlSha` tracks the default branch rather than pinning one commit for the
+whole lifecycle, because `workflow_dispatch` always runs at the head: a pin left
+behind by unrelated commits would fail every worker's revision gate and stall the
+lifecycle silently. Between registered jobs the controller compares its pinned
+revision with the current head and adopts the head when no protected path
+differs. A protected-path difference means the trusted harness itself moved, so
+the lifecycle is blocked for replanning instead. Anything the comparison cannot
+judge cleanly — a revert, a force push, or a diff at the API's file cap — is
+treated as a protected-path change. The protected set is the one in
+`policy.json`, so the paths agents may not write are exactly the paths whose
+movement invalidates their work.
 The persisted job links those inputs to the approved plan and selected task.
 
 ### Publication Preconditions

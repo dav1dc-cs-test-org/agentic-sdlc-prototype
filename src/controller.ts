@@ -27,6 +27,7 @@ export interface Platform {
   comments(number: number): Promise<Comment[]>;
   canWrite(actor: string): Promise<boolean>;
   baseline(): Promise<{ branch: string; sha: string }>;
+  trustedPathsChanged(from: string, to: string): Promise<boolean>;
   load(number: number): Promise<RecordState | undefined>;
   save(record: RecordState): Promise<void>;
   comment(number: number, key: string, body: string): Promise<void>;
@@ -135,10 +136,19 @@ export class Controller {
         }
         if (command.kind === 'approve') {
           if (this.request(issue) !== state.request) throw new Error('Issue changed; request a revised plan first');
+          const baseline = await this.platform.baseline();
+          if (baseline.branch !== state.baseBranch ||
+              await this.platform.trustedPathsChanged(state.controlSha, baseline.sha)) {
+            throw new Error('The trusted revision changed since this plan; request a revised plan first');
+          }
           state.approval = approvePlan({
             phase: state.phase, plan: state.plan, version: command.version, authorized: true,
             actor: comment.actor, commentId: comment.id, at: comment.createdAt,
           });
+          // No work exists yet, so the approved plan starts from the revision it is approved against.
+          state.baseSha = baseline.sha;
+          state.headSha = baseline.sha;
+          state.controlSha = baseline.sha;
           state.phase = 'decomposing';
         } else if (command.kind === 'revise') {
           const baseline = await this.platform.baseline();
@@ -202,9 +212,10 @@ export class Controller {
     await this.status(state);
     if (['awaiting_approval', 'paused', 'blocked', 'cancelled'].includes(state.phase)) return;
     const current = await this.platform.baseline();
-    if (current.sha !== state.controlSha || current.branch !== state.baseBranch) {
+    if (current.branch !== state.baseBranch ||
+        await this.platform.trustedPathsChanged(state.controlSha, current.sha)) {
       await this.interrupt(record, 'blocked');
-      state.error = 'The default branch changed. Use /sdlc revise <feedback> to replan against its new revision.';
+      state.error = 'The trusted revision changed. Use /sdlc revise <feedback> to replan against it.';
       await this.platform.save(record);
       await this.status(state);
       return;
@@ -216,6 +227,12 @@ export class Controller {
         await this.status(state);
         return;
       }
+    }
+    if (current.sha !== state.controlSha) {
+      // No job is registered here, so adopting the head cannot invalidate a pending result, and
+      // workflow_dispatch only ever runs at the head: a stale pin would silently skip every worker.
+      state.controlSha = current.sha;
+      await this.platform.save(record);
     }
     if (state.tasks.length) {
       for (const task of state.tasks) {

@@ -415,6 +415,26 @@ test('only controller-owned comments are updated and edited commands are ignored
   assert.equal((await github.comments(123))[0]!.human, false);
 });
 
+test('trusted path comparison fails closed on anything it cannot judge', async () => {
+  const compare = (data: Record<string, unknown>) =>
+    new GitHub('owner/repo', policy, 'sdlc[bot]', api(() => data)).trustedPathsChanged(baseSha, newSha);
+  assert.equal(await compare({ status: 'ahead',
+    files: [{ filename: 'docs/operations.md' }, { filename: 'src/clock/face.ts' }] }), false);
+  assert.equal(await new GitHub('owner/repo', policy, 'sdlc[bot]', api(() => {
+    throw new Error('an identical revision must not be compared');
+  })).trustedPathsChanged(baseSha, baseSha), false);
+  for (const data of [
+    { status: 'ahead', files: [{ filename: 'src/worker.ts' }] },
+    { status: 'ahead', files: [{ filename: '.github/workflows/ci.yml' }] },
+    { status: 'ahead', files: [{ filename: 'docs/moved.md', previous_filename: 'tsconfig.json' }] },
+    { status: 'diverged', files: [{ filename: 'README.md' }] },
+    { status: 'ahead' },
+    { status: 'ahead', files: Array.from({ length: 300 }, (_, index) => ({ filename: `app/file-${index}.ts` })) },
+  ]) {
+    assert.equal(await compare(data), true);
+  }
+});
+
 test('state storage bootstraps an isolated branch and preserves compare-and-swap on creation', async () => {
   const { state } = active();
   const writes: { path: string; body: Record<string, unknown> }[] = [];

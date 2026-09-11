@@ -2,7 +2,7 @@ import { Octokit } from '@octokit/rest';
 import { createHash } from 'node:crypto';
 import { unzipSync } from 'fflate';
 import { digest } from './domain.ts';
-import { isTestPath, validateChanges } from './changes.ts';
+import { isProtectedPath, isTestPath, validateChanges } from './changes.ts';
 import { lifecycleSchema, reportSchema, type Change, type Policy, type Report } from './contracts.ts';
 import { assertPublishable, type Job, type Lifecycle, type Task } from './lifecycle.ts';
 import { RetryablePlatformError, type Comment, type Issue, type Platform, type RecordState, type Run } from './controller.ts';
@@ -88,6 +88,17 @@ export class GitHub implements Platform {
   async baseline(): Promise<{ branch: string; sha: string }> {
     const { data: repo } = await this.api.repos.get(this.scope);
     return { branch: repo.default_branch, sha: await this.head(repo.default_branch) };
+  }
+
+  async trustedPathsChanged(from: string, to: string): Promise<boolean> {
+    if (from === to) return false;
+    const { data } = await this.api.repos.compareCommitsWithBasehead({ ...this.scope, basehead: `${from}...${to}` });
+    const files = data.files;
+    // Only a clean fast-forward with a complete file list can be judged. Reverts, force pushes, and
+    // diffs at or past the comparison file cap are indistinguishable from a swapped harness.
+    if (data.status !== 'ahead' || files === undefined || files.length >= 300) return true;
+    return files.some(file => isProtectedPath(file.filename, this.policy) ||
+      (file.previous_filename !== undefined && isProtectedPath(file.previous_filename, this.policy)));
   }
 
   async head(branch: string): Promise<string> {
