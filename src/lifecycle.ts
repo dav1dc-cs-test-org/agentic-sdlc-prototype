@@ -33,6 +33,7 @@ export interface Spend {
   credits: number;
   nearLimit: number;
   preempted: number;
+  historyComplete: boolean;
 }
 
 export interface Evidence {
@@ -44,7 +45,7 @@ export interface Evidence {
 }
 
 export interface Lifecycle {
-  schemaVersion: 1;
+  schemaVersion: 2;
   issueNumber: number;
   requester: string;
   request: string;
@@ -77,10 +78,10 @@ export function createLifecycle(issueNumber: number, requester: string, request:
     throw new Error('Lifecycle requires an issue number and immutable commit SHA');
   }
   return {
-    schemaVersion: 1, issueNumber, requester, request, phase: 'researching',
+    schemaVersion: 2, issueNumber, requester, request, phase: 'researching',
     baseSha, headSha: baseSha, baseBranch, controlSha: baseSha, branch: `agentic/epic-${issueNumber}-v1`,
     tasks: [], retiredTasks: [], evidence: [], processedEvents: [], sequence: 0, repairs: 0, failures: 0, feedback: '',
-    spend: { runs: 0, runnerMs: 0, credits: 0, nearLimit: 0, preempted: 0 },
+    spend: { runs: 0, runnerMs: 0, credits: 0, nearLimit: 0, preempted: 0, historyComplete: true },
   };
 }
 

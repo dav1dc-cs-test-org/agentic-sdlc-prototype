@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import test from 'node:test';
+import { pathToFileURL } from 'node:url';
 import { Controller, RetryablePlatformError, type Comment, type Platform, type RecordState, type Run } from '../src/controller.ts';
-import { lifecycleSchema, policySchema, type Change, type Intake, type Report } from '../src/contracts.ts';
-import type { Job, Lifecycle, Task } from '../src/lifecycle.ts';
+import { lifecycleSchema, migrateLifecycle, policySchema, type Change, type Intake, type Report } from '../src/contracts.ts';
+import { createLifecycle, type Job, type Lifecycle, type Task } from '../src/lifecycle.ts';
 
 const policy = policySchema.parse(JSON.parse(readFileSync('.github/sdlc/policy.json', 'utf8')));
 const baseSha = 'a'.repeat(40);
@@ -11,6 +15,7 @@ const baseSha = 'a'.repeat(40);
 class FakePlatform implements Platform {
   raw?: string;
   version?: string;
+  saveFailure?: unknown;
   input = { number: 123, title: 'Feature', body: 'Implement a feature', author: 'requester', open: true, labeled: true };
   messages: Comment[] = [];
   outputs = new Map<string, string>();
@@ -35,14 +40,19 @@ class FakePlatform implements Platform {
   async trustedPathsChanged(from: string, to: string) { return from !== to && this.trustedChange; }
   // Mirrors GitHub.save/GitHub.load exactly: raw JSON on write, schema-validated on read.
   async load() {
-    return this.raw === undefined ? undefined :
-      { state: lifecycleSchema.parse(JSON.parse(this.raw)), version: this.version };
+    if (this.raw === undefined) return undefined;
+    const stored = JSON.parse(this.raw);
+    const state = migrateLifecycle(stored);
+    return { state, version: this.version, needsMigration: stored.schemaVersion !== state.schemaVersion };
   }
   async save(record: RecordState) {
     lifecycleSchema.parse(record.state);
+    if (this.saveFailure) throw this.saveFailure;
+    assert.equal(record.version, this.version, 'State write conflict');
     this.raw = JSON.stringify(record.state);
     this.version = `${Number(this.version ?? 0) + 1}`;
     record.version = this.version;
+    delete record.needsMigration;
   }
   get stored(): { state: Lifecycle } | undefined {
     return this.raw === undefined ? undefined : { state: lifecycleSchema.parse(JSON.parse(this.raw)) };
@@ -94,6 +104,98 @@ class FakePlatform implements Platform {
   }
 }
 
+function controllerProcessFixture(states: Record<string, unknown>, interruptWrite = false) {
+  const directory = mkdtempSync(join(tmpdir(), 'sdlc-controller-migration-'));
+  const store = join(directory, 'store.json');
+  const preload = join(directory, 'mock-github.mjs');
+  writeFileSync(store, JSON.stringify({ states, comments: {}, requests: [], writes: [], interruptWrite }));
+  writeFileSync(preload, String.raw`
+import { createHash } from 'node:crypto';
+import { readFileSync, writeFileSync } from 'node:fs';
+const filename = process.env.MOCK_STORE;
+const sha = state => createHash('sha1').update(JSON.stringify(state)).digest('hex');
+globalThis.fetch = async (input, init) => {
+  const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
+  const method = input instanceof Request ? input.method : init?.method || 'GET';
+  const path = decodeURIComponent(url.pathname);
+  const body = init?.body ? JSON.parse(String(init.body)) : {};
+  const store = JSON.parse(readFileSync(filename, 'utf8'));
+  store.requests.push(method + ' ' + path);
+  const respond = (data, status = 200) => {
+    writeFileSync(filename, JSON.stringify(store));
+    const response = new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
+    Object.defineProperty(response, 'url', { value: url.href });
+    return response;
+  };
+  if (url.origin !== 'https://api.github.com') return respond({ message: 'Unexpected origin' }, 500);
+  if (method === 'GET' && path === '/repos/owner/repo') return respond({ default_branch: 'main' });
+  if (method === 'GET' && /^\/repos\/owner\/repo\/git\/ref\/heads\/(main|sdlc-state)$/.test(path)) {
+    return respond({ object: { sha: 'a'.repeat(40) } });
+  }
+  if (method === 'GET' && path === '/repos/owner/repo/contents/issues') {
+    return respond(Object.keys(store.states).map(number => ({ name: number + '.json', type: 'file' })));
+  }
+  if (method === 'GET' && path === '/repos/owner/repo/issues') return respond([]);
+  const record = /^\/repos\/owner\/repo\/contents\/issues\/(\d+)\.json$/.exec(path);
+  if (record) {
+    const number = record[1];
+    const state = store.states[number];
+    if (method === 'GET') {
+      const content = JSON.stringify(state);
+      return respond({ type: 'file', sha: sha(state), size: Buffer.byteLength(content),
+        content: Buffer.from(content).toString('base64') });
+    }
+    if (method === 'PUT' && body.branch === 'sdlc-state') {
+      if (body.sha !== sha(state)) return respond({ message: 'State write conflict' }, 409);
+      store.states[number] = JSON.parse(Buffer.from(body.content, 'base64').toString('utf8'));
+      store.writes.push(method + ' ' + path);
+      if (store.interruptWrite) {
+        store.interruptWrite = false;
+        writeFileSync(filename, JSON.stringify(store));
+        throw new Error('Lost migration acknowledgement');
+      }
+      return respond({ content: { sha: sha(store.states[number]) } });
+    }
+  }
+  const issue = /^\/repos\/owner\/repo\/issues\/(\d+)$/.exec(path);
+  if (method === 'GET' && issue) {
+    return respond({ number: Number(issue[1]), title: 'Feature', body: '',
+      user: { login: 'requester' }, state: 'closed', labels: [] });
+  }
+  const comments = /^\/repos\/owner\/repo\/issues\/(\d+)\/comments$/.exec(path);
+  if (comments) {
+    const number = comments[1];
+    if (method === 'GET') return respond(store.comments[number] || []);
+    if (method === 'POST') {
+      const comment = { id: Number(number), body: body.body, user: { login: 'sdlc[bot]', type: 'Bot' },
+        created_at: '2026-09-11T12:00:00Z', updated_at: '2026-09-11T12:00:00Z' };
+      (store.comments[number] ||= []).push(comment);
+      store.writes.push(method + ' ' + path);
+      return respond(comment);
+    }
+  }
+  return respond({ message: 'Unexpected request: ' + method + ' ' + path }, 500);
+};
+`);
+  const eventPath = join(directory, 'event.json');
+  return {
+    execute: (overrides: Record<string, string> = {}, event?: unknown) => {
+      if (event !== undefined) writeFileSync(eventPath, JSON.stringify(event));
+      return spawnSync(process.execPath, ['--import', pathToFileURL(preload).href, resolve('src/main.ts')], {
+          cwd: process.cwd(), encoding: 'utf8', env: {
+            GH_TOKEN: 'unused-fixture-token', GITHUB_REPOSITORY: 'owner/repo', SDLC_BOT_LOGIN: 'sdlc[bot]',
+            GITHUB_SHA: baseSha, MOCK_STORE: store,
+            ...(event === undefined ? {} : { GITHUB_EVENT_PATH: eventPath }),
+            ...(process.env.NODE_V8_COVERAGE ? { NODE_V8_COVERAGE: process.env.NODE_V8_COVERAGE } : {}),
+            ...overrides,
+          },
+        });
+    },
+    read: () => JSON.parse(readFileSync(store, 'utf8')),
+    dispose: () => rmSync(directory, { recursive: true, force: true }),
+  };
+}
+
 function intake(platform: FakePlatform, actor = 'maintainer'): Intake {
   return { issueNumber: platform.input.number, actor, requester: platform.input.author,
     title: platform.input.title, body: platform.input.body };
@@ -119,6 +221,216 @@ async function coding() {
   await context.controller.tick(123);
   return context;
 }
+
+test('legacy waiting and terminal lifecycles are migrated once without restarting work', async () => {
+  for (const phase of ['awaiting_approval', 'paused', 'pr_open', 'merged', 'cancelled'] as const) {
+    const { platform, controller } = await planned();
+    const state = platform.stored!.state;
+    state.phase = phase;
+    if (phase === 'pr_open') state.prNumber = 126;
+    platform.raw = JSON.stringify({ ...state, schemaVersion: 1, spend: undefined });
+    const version = Number(platform.version);
+    const dispatched = platform.dispatched.length;
+    await controller.tick(123);
+    assert.deepEqual(platform.stored!.state, { ...state, spend: {
+      runs: 0, runnerMs: 0, credits: 0, nearLimit: 0, preempted: 0, historyComplete: false,
+    } });
+    assert.match(platform.outputs.get('status')!, /Recorded cost \(earlier costs unavailable\)/);
+    assert.equal(Number(platform.version), version + 1);
+    await controller.tick(123);
+    assert.equal(Number(platform.version), version + 1);
+    assert.equal(platform.dispatched.length, dispatched);
+    assert.equal(platform.published, 0);
+  }
+});
+
+test('controller persists migration before PR effects and retries a failed state write', async () => {
+  const { platform, controller } = await planned();
+  const state = platform.stored!.state;
+  state.phase = 'pr_open';
+  state.prNumber = 126;
+  const legacy = JSON.stringify({ ...state, schemaVersion: 1, spend: undefined });
+  platform.raw = legacy;
+  platform.outputs.clear();
+  let inspected = 0;
+  platform.pullRequest = async () => { inspected += 1; return 'open'; };
+  platform.saveFailure = new Error('Interrupted migration');
+  await assert.rejects(controller.tick(123), /Interrupted migration/);
+  assert.equal(platform.raw, legacy);
+  assert.equal(inspected, 0);
+  assert.equal(platform.outputs.size, 0);
+  platform.saveFailure = undefined;
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.schemaVersion, 2);
+  assert.equal(inspected, 1);
+  assert.equal(platform.published, 0);
+});
+
+test('migrating a legacy plan does not authorize an untrusted approval command', async () => {
+  const { platform, controller } = await planned();
+  const state = platform.stored!.state;
+  platform.raw = JSON.stringify({ ...state, schemaVersion: 1, spend: undefined });
+  const dispatched = platform.dispatched.length;
+  platform.reply('/sdlc approve v1', 'stranger');
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.schemaVersion, 2);
+  assert.equal(platform.stored!.state.phase, 'awaiting_approval');
+  assert.equal(platform.stored!.state.approval, undefined);
+  assert.deepEqual(platform.stored!.state.plan, state.plan);
+  assert.equal(platform.dispatched.length, dispatched);
+  assert.equal(platform.published, 0);
+  assert.match(platform.outputs.get('comment:1')!, /only the requester or a repository maintainer/);
+});
+
+test('legacy migration cannot bypass the trusted-revision gate or accept an old job', async () => {
+  const { platform, controller } = await coding();
+  const state = platform.stored!.state;
+  const job = state.job!;
+  platform.raw = JSON.stringify({ ...state, schemaVersion: 1, spend: undefined });
+  platform.baselineSha = 'b'.repeat(40);
+  platform.trustedChange = true;
+  platform.runs.set(job.id, { id: 50, status: 'in_progress', conclusion: null, url: 'https://github.com/run/50' });
+  const dispatched = platform.dispatched.length;
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.schemaVersion, 2);
+  assert.equal(platform.stored!.state.phase, 'blocked');
+  assert.equal(platform.stored!.state.job, undefined);
+  assert.equal(platform.stored!.state.controlSha, state.controlSha);
+  assert.deepEqual(platform.stored!.state.approval, state.approval);
+  assert.deepEqual(platform.cancelled, [50]);
+  assert.match(platform.stored!.state.error!, /trusted revision changed/);
+  platform.runs.set(job.id, { id: 50, status: 'completed', conclusion: 'success', url: 'https://github.com/run/50' });
+  platform.reports.set(50, { jobId: job.id, inputSha: job.inputSha, outcome: 'pass', summary: 'Late result',
+    changes: [{ path: 'feature.txt', content: 'Must not be applied' }] });
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.phase, 'blocked');
+  assert.equal(platform.dispatched.length, dispatched);
+  assert.equal(platform.changed, 0);
+  assert.equal(platform.published, 0);
+  assert.equal(platform.charged.includes(50), false);
+});
+
+test('controller entry point isolates corrupt state and migrates closed issues idempotently', () => {
+  const legacy = { ...createLifecycle(1, 'requester', 'Feature', baseSha), phase: 'cancelled', schemaVersion: 1, spend: null };
+  const valid = { ...createLifecycle(2, 'requester', 'Feature', baseSha), phase: 'cancelled', schemaVersion: 1, spend: undefined };
+  const current = { ...createLifecycle(3, 'requester', 'Feature', baseSha), phase: 'merged' };
+  const fixture = controllerProcessFixture({ 1: legacy, 2: valid, 3: current });
+  try {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const result = fixture.execute();
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, /Issue #1:/);
+      assert.match(result.stderr, /spend/);
+      assert.doesNotMatch(result.stderr, /Unexpected|Issue #[23]:/);
+      assert.match(result.stdout, /Reconciled issue #2/);
+      assert.match(result.stdout, /Reconciled issue #3/);
+      const saved = fixture.read();
+      assert.deepEqual(saved.states['1'], legacy);
+      assert.deepEqual(saved.states['2'], migrateLifecycle(JSON.parse(JSON.stringify(valid))));
+      assert.deepEqual(saved.states['3'], current);
+      assert.deepEqual(saved.writes, [
+        'PUT /repos/owner/repo/contents/issues/2.json',
+        'POST /repos/owner/repo/issues/2/comments', 'POST /repos/owner/repo/issues/3/comments',
+      ]);
+      assert.match(saved.comments['2'][0].body, /earlier costs unavailable/);
+    }
+    const selected = fixture.execute({ SDLC_ISSUE: '2' });
+    assert.equal(selected.status, 0, selected.stderr);
+    assert.equal(selected.stdout.trim(), 'Reconciled issue #2');
+    assert.equal(fixture.read().writes.length, 3);
+  } finally { fixture.dispose(); }
+});
+
+test('controller entry point recovers a committed migration after losing its acknowledgement', () => {
+  const legacy = { ...createLifecycle(1, 'requester', 'Feature', baseSha), phase: 'cancelled', schemaVersion: 1, spend: undefined };
+  const fixture = controllerProcessFixture({ 1: legacy }, true);
+  try {
+    const interrupted = fixture.execute();
+    assert.equal(interrupted.status, 1);
+    assert.match(interrupted.stderr, /Lost migration acknowledgement/);
+    const saved = fixture.read();
+    assert.deepEqual(saved.states['1'], migrateLifecycle(JSON.parse(JSON.stringify(legacy))));
+    assert.deepEqual(saved.writes, ['PUT /repos/owner/repo/contents/issues/1.json']);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const recovered = fixture.execute();
+      assert.equal(recovered.status, 0, recovered.stderr);
+      assert.deepEqual(fixture.read().states, saved.states);
+      assert.deepEqual(fixture.read().writes, [
+        'PUT /repos/owner/repo/contents/issues/1.json', 'POST /repos/owner/repo/issues/1/comments',
+      ]);
+    }
+  } finally { fixture.dispose(); }
+});
+
+test('controller entry point rejects missing credentials and stale code before migration', () => {
+  const legacy = { ...createLifecycle(1, 'requester', 'Feature', baseSha), phase: 'cancelled', schemaVersion: 1, spend: undefined };
+  const fixture = controllerProcessFixture({ 1: legacy });
+  try {
+    const missing = fixture.execute({ GH_TOKEN: '' });
+    assert.equal(missing.status, 1);
+    assert.match(missing.stderr, /scoped GitHub App token is required/);
+    assert.deepEqual(fixture.read().requests, []);
+    const stale = fixture.execute({ GITHUB_SHA: 'b'.repeat(40) });
+    assert.equal(stale.status, 1);
+    assert.match(stale.stderr, /Controller revision is stale/);
+    assert.deepEqual(fixture.read().requests, ['GET /repos/owner/repo', 'GET /repos/owner/repo/git/ref/heads/main']);
+    assert.deepEqual(fixture.read().writes, []);
+    assert.deepEqual(fixture.read().states, JSON.parse(JSON.stringify({ 1: legacy })));
+  } finally { fixture.dispose(); }
+});
+
+test('controller entry point selects only the issue named by each supported event', () => {
+  const states = Object.fromEntries([1, 2].map(number => [number, {
+    ...createLifecycle(number, 'requester', 'Feature', baseSha), phase: 'cancelled', schemaVersion: 1, spend: undefined,
+  }]));
+  for (const event of [
+    { workflow_run: { display_title: 'SDLC 2-7' } },
+    { issue: { number: 2 } },
+    { action: 'labeled', label: { name: policy.label }, sender: { login: 'maintainer', type: 'User' },
+      issue: { number: 2, title: 'Feature', body: '', user: { login: 'requester' } } },
+  ]) {
+    const fixture = controllerProcessFixture(states);
+    try {
+      const result = fixture.execute({}, event);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout.trim(), 'Reconciled issue #2');
+      assert.deepEqual(fixture.read().states['1'], JSON.parse(JSON.stringify(states['1'])));
+      assert.equal(fixture.read().states['2'].schemaVersion, 2);
+      assert.deepEqual(fixture.read().writes, [
+        'PUT /repos/owner/repo/contents/issues/2.json', 'POST /repos/owner/repo/issues/2/comments',
+      ]);
+    } finally { fixture.dispose(); }
+  }
+});
+
+test('controller entry point ignores PR events before loading or migrating state', () => {
+  const fixture = controllerProcessFixture({
+    1: { ...createLifecycle(1, 'requester', 'Feature', baseSha), schemaVersion: 1, spend: undefined },
+  });
+  try {
+    const result = fixture.execute({}, { issue: { number: 1, pull_request: {} } });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, '');
+    assert.deepEqual(fixture.read().requests, ['GET /repos/owner/repo', 'GET /repos/owner/repo/git/ref/heads/main']);
+    assert.deepEqual(fixture.read().writes, []);
+    assert.equal(fixture.read().states['1'].schemaVersion, 1);
+  } finally { fixture.dispose(); }
+});
+
+test('controller entry point rejects invalid issue selections without touching saved records', () => {
+  const fixture = controllerProcessFixture({
+    1: { ...createLifecycle(1, 'requester', 'Feature', baseSha), schemaVersion: 1, spend: undefined },
+  });
+  try {
+    for (const issue of ['0', '-1', 'not-a-number', '9007199254740992']) {
+      const result = fixture.execute({ SDLC_ISSUE: issue });
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /Invalid issue number/);
+      assert.deepEqual(fixture.read().writes, []);
+      assert.equal(fixture.read().states['1'].schemaVersion, 1);
+    }
+  } finally { fixture.dispose(); }
+});
 
 test('label intake is authorized and duplicate events do not duplicate dispatch', async () => {
   const platform = new FakePlatform();
@@ -315,6 +627,36 @@ test('every completed run is charged once, including one the credit limiter pre-
   const charged = platform.charged.length;
   await controller.tick(123);
   assert.equal(platform.charged.length, charged, 'a run is charged once, not once per tick');
+  assert.doesNotMatch(platform.outputs.get('status')!, /earlier costs unavailable/);
+});
+
+test('migrated in-flight jobs preserve cost history and charge each run only once across retries', async () => {
+  for (const measured of [false, true]) {
+    const { platform, controller } = await coding();
+    const charged = platform.charged.length;
+    platform.costs = [{ runnerMs: 45_000, credits: 33, preempted: false }];
+    platform.finish();
+    platform.reportFailure = new RetryablePlatformError('Artifact not yet available');
+    if (measured) await assert.rejects(controller.tick(123), error => error === platform.reportFailure);
+    const state = platform.stored!.state;
+    platform.raw = JSON.stringify({ ...state, schemaVersion: 1,
+      spend: measured ? { ...state.spend, historyComplete: undefined } : undefined });
+    const expected = measured ? state.spend : {
+      runs: 1, runnerMs: 45_000, credits: 33, nearLimit: 0, preempted: 0, historyComplete: false,
+    };
+    await assert.rejects(controller.tick(123), error => error === platform.reportFailure);
+    await assert.rejects(controller.tick(123), error => error === platform.reportFailure);
+    assert.deepEqual(platform.stored!.state.spend, expected);
+    assert.equal(platform.charged.length, charged + 1);
+    assert.equal(platform.outputs.get('status')!.includes('earlier costs unavailable'), !measured);
+    platform.reportFailure = undefined;
+    await controller.tick(123);
+    assert.deepEqual(platform.stored!.state.spend, expected);
+    assert.equal(platform.charged.length, charged + 1);
+    platform.reply('/sdlc revise Prefer a smaller change');
+    await controller.tick(123);
+    assert.deepEqual(platform.stored!.state.spend, expected);
+  }
 });
 
 test('a rejected result still consumes budget', async () => {

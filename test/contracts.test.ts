@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { lifecycleSchema, parseIntakeEvent, policySchema, reportSchema } from '../src/contracts.ts';
+import { lifecycleSchema, migrateLifecycle, parseIntakeEvent, policySchema, reportSchema } from '../src/contracts.ts';
 import { validateChanges } from '../src/changes.ts';
 import { approvePlan, digest, makePlan } from '../src/domain.ts';
 import { createLifecycle } from '../src/lifecycle.ts';
@@ -27,6 +27,63 @@ test('validation never rewrites the text that plan hashes are computed over', ()
   assert.doesNotThrow(() => approvePlan({ phase: restored.phase, plan: restored.plan, version: 1,
     authorized: true, actor: 'requester', commentId: 1, at: '2026-09-08T12:00:00Z' }));
   assert.throws(() => lifecycleSchema.parse({ ...state, request: '   ' }));
+});
+
+test('legacy state without cost history migrates without changing lifecycle authority', () => {
+  const state = createLifecycle(123, 'requester', 'Title\n\nBody\n', 'a'.repeat(40));
+  state.plan = makePlan('## Plan\n\nKeep the exact approved text.\n', 0);
+  state.approval = { actor: 'requester', commentId: 12, planHash: state.plan.hash, at: '2026-09-08T12:00:00Z' };
+  state.phase = 'pr_open';
+  state.prNumber = 456;
+  state.sequence = 4;
+  state.tasks = [{ id: 'feature', title: 'Feature', description: 'Implement the feature',
+    acceptance: ['Tests pass'], dependsOn: [], issueNumber: 124, completed: true }];
+  state.evidence = [{ stage: 'review', sha: state.headSha, jobId: '123-4', runId: 99, summary: 'Reviewed\n' }];
+  state.processedEvents = ['comment:12'];
+  const legacy = JSON.parse(JSON.stringify({ ...state, schemaVersion: 1, spend: undefined }));
+  const before = JSON.stringify(legacy);
+  const migrated = migrateLifecycle(legacy);
+  assert.deepEqual(migrated, { ...state, spend: { ...state.spend, historyComplete: false } });
+  assert.equal(JSON.stringify(legacy), before);
+  assert.deepEqual(lifecycleSchema.parse(migrated), migrated);
+  assert.deepEqual(migrateLifecycle(JSON.parse(JSON.stringify(migrated))), migrated);
+});
+
+test('legacy measured costs and current state survive migration unchanged', () => {
+  const state = createLifecycle(123, 'requester', 'Feature', 'a'.repeat(40));
+  const totals = { runs: 4, runnerMs: 234_000, credits: 312.5, nearLimit: 1, preempted: 1 };
+  const migrated = migrateLifecycle({ ...state, schemaVersion: 1, spend: totals });
+  assert.deepEqual(migrated, { ...state, spend: { ...totals, historyComplete: true } });
+  assert.deepEqual(migrateLifecycle(state), state);
+  assert.equal(state.schemaVersion, 2);
+  assert.equal(state.spend.historyComplete, true);
+});
+
+test('migration rejects malformed costs, unknown versions, and unexpected authority', () => {
+  const state = createLifecycle(123, 'requester', 'Feature', 'a'.repeat(40));
+  const legacy = { ...state, schemaVersion: 1, spend: undefined };
+  for (const input of [
+    { ...legacy, spend: null },
+    { ...legacy, spend: {} },
+    { ...legacy, spend: [] },
+    { ...legacy, spend: { runs: -1, runnerMs: 0, credits: 0, nearLimit: 0, preempted: 0 } },
+    { ...legacy, spend: { runs: 1, runnerMs: 0, credits: 0, nearLimit: 0 } },
+    { ...legacy, spend: { runs: 1, runnerMs: 0, credits: 0, nearLimit: 0, preempted: 0, bypass: true } },
+    { ...legacy, bypass: true },
+    { ...legacy, request: '   ' },
+    { ...legacy, schemaVersion: '1' },
+    { ...state, schemaVersion: 3 },
+    { ...state, schemaVersion: undefined },
+    { ...state, spend: undefined },
+    { ...state, spend: { ...state.spend, historyComplete: undefined } },
+    { ...state, spend: { ...state.spend, historyComplete: 'false' } },
+    { ...state, spend: { ...state.spend, runs: 0.5 } },
+    { ...state, spend: { ...state.spend, credits: '0' } },
+    { ...state, spend: { ...state.spend, credits: Infinity } },
+    { ...state, spend: { ...state.spend, credits: NaN } },
+    { ...state, spend: { ...state.spend, runnerMs: -1 } },
+  ]) assert.throws(() => migrateLifecycle(input));
+  assert.throws(() => lifecycleSchema.parse(legacy));
 });
 
 test('intake is bound to an immutable human label-event snapshot', () => {

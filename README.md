@@ -141,6 +141,13 @@ coalesced by Actions concurrency or callbacks are missed. Initial intake still
 requires a live authorized label event. Jobs are persisted before dispatch and accepted only from the
 configured App, trusted workflow revision, expected job, and exact source SHA.
 
+State uses `schemaVersion: 2`. Valid version-1 records, with or without cost
+accounting, are upgraded automatically by the controller without resetting plans,
+approvals, tasks, or evidence. Missing historical costs are marked as unavailable,
+not reported as a zero-cost lifecycle. Follow [State Upgrades](docs/operations.md#state-upgrades)
+before deploying to an existing installation; older controller and worker runs
+must be stopped before version-2 state is written.
+
 Workers receive read-only repository credentials. They return reports and text
 changes as artifacts. The separate controller validates paths, sizes, stage
 permissions, regular-file types, baseline tests, and branch history before

@@ -5,7 +5,7 @@ import test from 'node:test';
 import { Octokit } from '@octokit/rest';
 import { strToU8, zipSync } from 'fflate';
 import { GitHub, decodeCostArchive, decodeReportArchive, neutralizeClosingKeywords } from '../src/github.ts';
-import { RetryablePlatformError } from '../src/controller.ts';
+import { Controller, RetryablePlatformError } from '../src/controller.ts';
 import { policySchema } from '../src/contracts.ts';
 import { createLifecycle, startJob } from '../src/lifecycle.ts';
 import { approvePlan, digest, makePlan } from '../src/domain.ts';
@@ -82,6 +82,193 @@ test('state writes carry the prior content SHA for compare-and-swap', async () =
   assert.equal(written?.sha, baseSha);
   assert.equal(written?.branch, 'sdlc-state');
   assert.equal(record.version, newSha);
+});
+
+test('legacy state loads read-only and round-trips with the original concurrency token', async () => {
+  for (const spend of [undefined, { runs: 2, runnerMs: 120_000, credits: 21.5, nearLimit: 1, preempted: 0 }]) {
+    const { state, job } = active();
+    job.runId = 7;
+    if (spend) job.costedRun = 7;
+    let stored = JSON.stringify({ ...state, schemaVersion: 1, spend });
+    const original = stored;
+    let version = baseSha;
+    let writes = 0;
+    const github = new GitHub('owner/repo', policy, 'sdlc[bot]', api((method, path, body) => {
+      if (path.includes('/git/ref/')) return { object: { sha: baseSha } };
+      if (method === 'GET') return {
+        type: 'file', sha: version, size: stored.length, content: Buffer.from(stored).toString('base64'),
+      };
+      assert.equal(method, 'PUT');
+      if (body.sha !== version) return new Response('{"message":"State write conflict"}', { status: 409 });
+      assert.equal(body.branch, 'sdlc-state');
+      stored = Buffer.from(String(body.content), 'base64').toString('utf8');
+      version = newSha;
+      writes += 1;
+      return { content: { sha: version } };
+    }));
+    const record = (await github.load(123))!;
+    const stale = (await github.load(123))!;
+    assert.equal(record.needsMigration, true);
+    assert.equal(record.version, baseSha);
+    assert.equal(record.state.spend.historyComplete, spend !== undefined);
+    assert.deepEqual(record.state.job, state.job);
+    assert.equal(stored, original);
+    assert.equal(writes, 0);
+    await github.save(record);
+    assert.equal(record.needsMigration, undefined);
+    assert.equal(record.version, newSha);
+    assert.deepEqual(JSON.parse(stored), record.state);
+    const reloaded = (await github.load(123))!;
+    assert.equal(reloaded.needsMigration, false);
+    assert.deepEqual(reloaded.state, record.state);
+    await assert.rejects(github.save(stale), /State write conflict/);
+    assert.equal(stale.needsMigration, true);
+    assert.equal(writes, 1);
+    assert.deepEqual((await github.load(123))!.state, record.state);
+  }
+});
+
+test('controller and real GitHub adapter migrate open PR state once without unrelated writes', async () => {
+  for (const spend of [undefined, { runs: 4, runnerMs: 234_000, credits: 312.5, nearLimit: 1, preempted: 1 }]) {
+    const state = publishable();
+    state.phase = 'pr_open';
+    state.prNumber = 126;
+    let stored = JSON.stringify({ ...state, schemaVersion: 1, spend });
+    let version = baseSha;
+    const mutations: string[] = [];
+    const comments = [{ id: 99, body: '<!-- sdlc:status -->\nOld status',
+      user: { login: 'sdlc[bot]', type: 'Bot' }, created_at: '2026-09-08T12:00:00Z', updated_at: '2026-09-08T12:00:00Z' }];
+    const client = api((method, path, body) => {
+      if (method !== 'GET') mutations.push(`${method} ${path}`);
+      if (method === 'GET' && path === '/repos/owner/repo/issues/123') return {
+        title: 'Feature', body: '', user: { login: 'requester' }, state: 'open', labels: [policy.label],
+      };
+      if (method === 'GET' && path === '/repos/owner/repo/contents/issues/123.json') return {
+        type: 'file', sha: version, size: Buffer.byteLength(stored), content: Buffer.from(stored).toString('base64'),
+      };
+      if (method === 'GET' && path === '/repos/owner/repo/git/ref/heads/sdlc-state') return { object: { sha: baseSha } };
+      if (method === 'PUT' && path === '/repos/owner/repo/contents/issues/123.json') {
+        assert.equal(body.sha, version);
+        assert.equal(body.branch, 'sdlc-state');
+        stored = Buffer.from(String(body.content), 'base64').toString('utf8');
+        version = newSha;
+        return { content: { sha: version } };
+      }
+      if (method === 'GET' && path === '/repos/owner/repo/pulls/126') {
+        assert.equal(JSON.parse(stored).schemaVersion, 2);
+        return { state: 'open', merged: false };
+      }
+      if (method === 'GET' && path === '/repos/owner/repo/issues/123/comments') return comments;
+      if (method === 'PATCH' && path === '/repos/owner/repo/issues/comments/99') {
+        comments[0]!.body = String(body.body);
+        return comments[0];
+      }
+      throw new Error(`Unexpected migration side effect: ${method} ${path}`);
+    });
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await new Controller(new GitHub('owner/repo', policy, 'sdlc[bot]', client), policy).tick(123);
+      assert.deepEqual(JSON.parse(stored), JSON.parse(JSON.stringify({ ...state,
+        spend: spend ? { ...spend, historyComplete: true } : { ...state.spend, historyComplete: false },
+      })));
+      assert.deepEqual(mutations, [
+        'PUT /repos/owner/repo/contents/issues/123.json', 'PATCH /repos/owner/repo/issues/comments/99',
+      ]);
+      assert.equal(comments[0]!.body.includes('earlier costs unavailable'), spend === undefined);
+    }
+  }
+});
+
+test('invalid or mismatched legacy records stop the real controller before any write', async () => {
+  const state = { ...publishable(), phase: 'pr_open', prNumber: 126, schemaVersion: 1, spend: undefined };
+  for (const stored of [
+    { ...state, spend: null },
+    { ...state, spend: {} },
+    { ...state, schemaVersion: 3 },
+    { ...state, bypass: true },
+    { ...state, issueNumber: 124 },
+    { ...state, branch: 'agentic/epic-124-v1' },
+  ]) {
+    const requests: string[] = [];
+    const serialized = JSON.stringify(stored);
+    const client = api((method, path) => {
+      requests.push(`${method} ${path}`);
+      if (method === 'GET' && path === '/repos/owner/repo/issues/123') return {
+        title: 'Feature', body: '', user: { login: 'requester' }, state: 'open', labels: [policy.label],
+      };
+      if (method === 'GET' && path === '/repos/owner/repo/contents/issues/123.json') return {
+        type: 'file', sha: baseSha, size: serialized.length, content: Buffer.from(serialized).toString('base64'),
+      };
+      throw new Error(`Unexpected request: ${method} ${path}`);
+    });
+    await assert.rejects(new Controller(new GitHub('owner/repo', policy, 'sdlc[bot]', client), policy).tick(123),
+      /spend|schemaVersion|Unrecognized key|identity/);
+    assert.deepEqual(requests, ['GET /repos/owner/repo/issues/123', 'GET /repos/owner/repo/contents/issues/123.json']);
+    assert.equal(JSON.stringify(stored), serialized);
+  }
+});
+
+test('denied or conflicting migration writes stop the real controller before PR or comment effects', async () => {
+  for (const status of [403, 409]) {
+    const state = { ...publishable(), phase: 'pr_open', prNumber: 126, schemaVersion: 1, spend: undefined };
+    const serialized = JSON.stringify(state);
+    const requests: string[] = [];
+    const client = api((method, path, body) => {
+      requests.push(`${method} ${path}`);
+      if (method === 'GET' && path === '/repos/owner/repo/issues/123') return {
+        title: 'Feature', body: '', user: { login: 'requester' }, state: 'open', labels: [policy.label],
+      };
+      if (method === 'GET' && path === '/repos/owner/repo/contents/issues/123.json') return {
+        type: 'file', sha: baseSha, size: serialized.length, content: Buffer.from(serialized).toString('base64'),
+      };
+      if (method === 'GET' && path === '/repos/owner/repo/git/ref/heads/sdlc-state') return { object: { sha: baseSha } };
+      if (method === 'PUT' && path === '/repos/owner/repo/contents/issues/123.json') {
+        assert.equal(body.sha, baseSha);
+        assert.equal(body.branch, 'sdlc-state');
+        return new Response('{"message":"Migration write rejected"}', { status });
+      }
+      throw new Error(`Unexpected request: ${method} ${path}`);
+    });
+    await assert.rejects(new Controller(new GitHub('owner/repo', policy, 'sdlc[bot]', client), policy).tick(123),
+      error => error instanceof Error && 'status' in error && error.status === status);
+    assert.deepEqual(requests, [
+      'GET /repos/owner/repo/issues/123', 'GET /repos/owner/repo/contents/issues/123.json',
+      'GET /repos/owner/repo/git/ref/heads/sdlc-state', 'PUT /repos/owner/repo/contents/issues/123.json',
+    ]);
+    assert.equal(JSON.stringify(state), serialized);
+  }
+});
+
+test('interrupted migration writes recover without losing state or remigrating committed data', async () => {
+  for (const afterCommit of [false, true]) {
+    const { state } = active();
+    let stored = JSON.stringify({ ...state, schemaVersion: 1, spend: undefined });
+    let version = baseSha;
+    let interrupt = true;
+    let writes = 0;
+    const github = new GitHub('owner/repo', policy, 'sdlc[bot]', api((method, path, body) => {
+      if (path.includes('/git/ref/')) return { object: { sha: baseSha } };
+      if (method === 'GET') return {
+        type: 'file', sha: version, size: stored.length, content: Buffer.from(stored).toString('base64'),
+      };
+      assert.equal(body.sha, version);
+      if (interrupt && !afterCommit) { interrupt = false; throw new Error('Interrupted migration'); }
+      stored = Buffer.from(String(body.content), 'base64').toString('utf8');
+      version = newSha;
+      writes += 1;
+      if (interrupt) { interrupt = false; throw new Error('Interrupted migration'); }
+      return { content: { sha: version } };
+    }));
+    const record = (await github.load(123))!;
+    await assert.rejects(github.save(record), /Interrupted migration/);
+    assert.equal(record.needsMigration, true);
+    assert.equal(record.version, baseSha);
+    const recovered = (await github.load(123))!;
+    assert.equal(recovered.needsMigration, !afterCommit);
+    assert.deepEqual(recovered.state, record.state);
+    if (recovered.needsMigration) await github.save(recovered);
+    assert.equal(writes, 1);
+    assert.equal((await github.load(123))!.needsMigration, false);
+  }
 });
 
 test('worker discovery rejects runs from other actors, commits, or reruns', async () => {
@@ -395,6 +582,7 @@ test('final PR, advisory review, and commit check are idempotent and reference t
   assert.match(String(pulls[0]!.body), /Closes #123/);
   assert.match(String(pulls[0]!.body), /Fixes issue #455/);
   assert.match(String(pulls[0]!.body), /Closes issue owner\/repo#456/);
+  assert.doesNotMatch(String(pulls[0]!.body), /earlier costs unavailable/);
   assert.equal(reviews.length, 1);
   assert.equal(reviews[0]!.event, 'COMMENT');
   assert.equal(reviews[0]!.commit_id, newSha);
@@ -403,6 +591,27 @@ test('final PR, advisory review, and commit check are idempotent and reference t
   assert.equal(checks[0]!.head_sha, newSha);
   pulls[0]!.state = 'closed';
   await assert.rejects(github.publish(state), /already closed/);
+});
+
+test('new PRs distinguish partial cost totals from the full lifecycle cost', async () => {
+  const state = publishable();
+  state.spend = { runs: 2, runnerMs: 120_000, credits: 12.5, nearLimit: 0, preempted: 0, historyComplete: false };
+  let description = '';
+  const github = new GitHub('owner/repo', policy, 'sdlc[bot]', api((method, path, body) => {
+    if (path.includes('/git/ref/')) return { object: { sha: newSha } };
+    if (path.endsWith('/issues/123')) return { title: 'Feature', body: 'Request', user: { login: 'requester' }, state: 'open', labels: [] };
+    if (path.endsWith('/pulls')) {
+      if (method === 'GET') return [];
+      description = String(body.body);
+      return { number: 126 };
+    }
+    if (path.endsWith('/reviews')) return method === 'GET' ? [] : { id: 1 };
+    if (path.endsWith('/check-runs')) return method === 'GET' ? { total_count: 0, check_runs: [] } : { id: 1 };
+    throw new Error(`Unexpected request: ${method} ${path}`);
+  }));
+  await github.publish(state);
+  assert.match(description, /earlier costs unavailable\. Totals cover recorded runs only/);
+  assert.match(description, /2\.0 runner minutes and 12\.5 AI credits across 2 runs/);
 });
 
 test('state reads validate identity and reject corrupt or oversized data', async () => {

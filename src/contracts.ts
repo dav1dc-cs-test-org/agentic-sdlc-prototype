@@ -98,8 +98,14 @@ const jobSchema = z.object({
   costedRun: numberSchema.optional(),
 }).strict();
 
+const spendSchema = z.object({
+  runs: z.number().int().min(0), runnerMs: z.number().min(0).finite(),
+  credits: z.number().min(0).finite(), nearLimit: z.number().int().min(0),
+  preempted: z.number().int().min(0),
+}).strict();
+
 export const lifecycleSchema = z.object({
-  schemaVersion: z.literal(1), issueNumber: numberSchema,
+  schemaVersion: z.literal(2), issueNumber: numberSchema,
   requester: text.max(100), request: text.max(60000), phase: phaseSchema,
   baseSha: shaSchema, headSha: shaSchema, controlSha: shaSchema,
   baseBranch: text.max(200), branch: z.string().regex(/^agentic\/epic-\d+-v\d+$/),
@@ -116,11 +122,24 @@ export const lifecycleSchema = z.object({
   }).strict()).max(100),
   processedEvents: z.array(z.string()).max(10000),
   sequence: z.number().int().min(0), repairs: z.number().int().min(0), failures: z.number().int().min(0),
-  spend: z.object({
-    runs: z.number().int().min(0), runnerMs: z.number().min(0).finite(),
-    credits: z.number().min(0).finite(), nearLimit: z.number().int().min(0),
-    preempted: z.number().int().min(0),
-  }).strict(),
+  spend: spendSchema.extend({ historyComplete: z.boolean() }),
   feedback: z.string().max(24000), resumePhase: phaseSchema.optional(), error: z.string().max(12000).optional(),
   prNumber: numberSchema.optional(),
 }).strict() satisfies z.ZodType<Lifecycle>;
+
+const storedLifecycleSchema = z.discriminatedUnion('schemaVersion', [
+  lifecycleSchema,
+  lifecycleSchema.extend({ schemaVersion: z.literal(1), spend: spendSchema.optional() }),
+]);
+
+export function migrateLifecycle(input: unknown): Lifecycle {
+  const state = storedLifecycleSchema.parse(input);
+  if (state.schemaVersion === 2) return state;
+  return {
+    ...state,
+    schemaVersion: 2,
+    spend: state.spend ? { ...state.spend, historyComplete: true } : {
+      runs: 0, runnerMs: 0, credits: 0, nearLimit: 0, preempted: 0, historyComplete: false,
+    },
+  };
+}

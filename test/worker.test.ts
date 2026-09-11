@@ -78,7 +78,7 @@ globalThis.fetch = async (input, init) => {
     content: Buffer.from(raw).toString('base64') }), { status: 200, headers: { 'content-type': 'application/json' } });
 };
 `);
-  const execute = (name: string, stored: typeof state, overrides: Record<string, string> = {}) => {
+  const execute = (name: string, stored: unknown, overrides: Record<string, string> = {}) => {
     const workspace = join(directory, name);
     mkdirSync(workspace);
     const output = join(workspace, 'github-output.txt');
@@ -99,10 +99,18 @@ globalThis.fetch = async (input, init) => {
     assert.deepEqual(JSON.parse(readFileSync(join(valid.workspace, '.sdlc-context.json'), 'utf8')), { state, policy });
     assert.equal(readFileSync(valid.output, 'utf8'), `base_sha=${state.baseSha}\n`);
 
-    const mismatches: [string, typeof state, Record<string, string>][] = [
+    const legacy = execute('legacy', { ...state, schemaVersion: 1, spend: undefined });
+    assert.equal(legacy.result.status, 0, legacy.result.stderr);
+    assert.deepEqual(JSON.parse(readFileSync(join(legacy.workspace, '.sdlc-context.json'), 'utf8')), {
+      state: { ...state, spend: { ...state.spend, historyComplete: false } }, policy,
+    });
+
+    const mismatches: [string, unknown, Record<string, string>][] = [
       ['source', state, { SDLC_SOURCE_SHA: 'b'.repeat(40) }],
       ['stage', state, { SDLC_STAGE: 'security' }],
       ['approval', { ...state, approval: { ...state.approval!, planHash: 'd'.repeat(64) } }, {}],
+      ['legacy-approval', { ...state, schemaVersion: 1, spend: undefined,
+        approval: { ...state.approval!, planHash: 'd'.repeat(64) } }, {}],
     ];
     for (const [name, stored, overrides] of mismatches) {
       const rejected = execute(name, stored, overrides);

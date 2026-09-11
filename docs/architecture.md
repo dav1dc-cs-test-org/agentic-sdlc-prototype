@@ -287,6 +287,13 @@ sequenceDiagram
   participant HwArtifacts as "Actions artifacts"
   participant HwBranch as "Feature branch"
 
+  HwControl->>HwState: Read lifecycle and state-file SHA
+  HwState-->>HwControl: Persisted lifecycle
+  HwControl->>HwControl: Validate version and migrate legacy data in memory
+    opt Legacy record requires an upgrade
+    HwControl->>HwState: Persist version 2 using the original file SHA
+    HwState-->>HwControl: Updated state-file SHA
+    end
   HwControl->>HwState: Persist job, source SHA, control SHA, and plan hash
   HwState-->>HwControl: Updated state-file version
   HwControl->>HwState: Persist dispatch timestamp
@@ -294,6 +301,7 @@ sequenceDiagram
   HwActions-)HwWorker: Start expected workflow revision
   HwWorker->>HwState: Read registered lifecycle using read-only access
   HwState-->>HwWorker: Job, approved plan, tasks, and prior evidence
+  HwWorker->>HwWorker: Validate and migrate state in memory only
   HwWorker->>HwWorker: Check registered inputs and runnable state
   HwWorker->>HwWorker: Execute assigned role or deterministic checks
   HwWorker->>HwArtifacts: Upload sdlc-result and supporting evidence
@@ -425,6 +433,10 @@ review remain necessary at the PR boundary.
 The controller records state before dispatching work or invalidating a job.
 Only recognized, current results can advance a running lifecycle.
 
+State validation and any required migration must succeed before this phase-based
+recovery flow runs. A schema error or failed migration write stops reconciliation
+for that issue without changing its lifecycle phase.
+
 <!-- mermaid-checked: safe quoted labels, unique IDs, closed subgraphs -->
 ```mermaid
 flowchart TD
@@ -535,7 +547,7 @@ flowchart LR
     ComponentController -->|"Platform operations"| ComponentGitHub
     ComponentController -->|"Validate results"| ComponentContracts
     ComponentController -->|"Restrict proposed changes"| ComponentChanges
-    ComponentGitHub -->|"Parse stored state and artifacts"| ComponentContracts
+    ComponentGitHub -->|"Validate artifacts and migrate stored state"| ComponentContracts
     ComponentGitHub -->|"Validate writes and compare trusted paths"| ComponentChanges
     ComponentWorker -->|"Read registered lifecycle"| ComponentGitHub
     ComponentWorker -->|"Check approval integrity"| ComponentLifecycle
@@ -577,6 +589,27 @@ That branch is initialized with an isolated root commit, separate from feature
 history. The default feature branch pattern is `agentic/epic-<number>-v<version>`;
 the branch is created lazily when the first accepted text change is published.
 
+### Schema Migration
+
+New records and all writes use `schemaVersion: 2`. The shared loader validates
+either version 2 or the known version-1 formats, which may have no `spend` object
+or an existing cost ledger. `migrateLifecycle` converts version 1 in memory and
+does not change phase, plan text or hash, approval, tasks, evidence, job identity,
+commit bindings, or existing cost counters. Malformed data and unknown versions
+are rejected; current-version writes never apply implicit defaults.
+
+The storage adapter returns a transient `needsMigration` flag alongside the
+original file SHA. Only the controller saves the upgrade, before any command,
+PR processing, or terminal-state early return. This includes `pr_open`, `merged`,
+and `cancelled` records. Workers use the same read-only loader and cannot persist
+an upgrade. Migration is idempotent: an uncommitted write can be retried, a lost
+acknowledgement is resolved by reloading, and stale writers fail the existing
+SHA concurrency check. The flag is not stored in the lifecycle JSON.
+
+The migration does not authorize new work or relax trusted-revision checks.
+Deploy only after older controller and worker runs are idle, following
+[State Upgrades](operations.md#state-upgrades).
+
 ### Revision Bindings
 
 | Binding | Purpose |
@@ -587,7 +620,8 @@ the branch is created lazily when the first accepted text change is published.
 | `plan.hash` | Immutable plan content and version fingerprint |
 | `job.inputSha` | Source commit supplied to a particular worker |
 | `job.runId` | Accepted GitHub run for the registered job |
-| `spend` | Cumulative runner time and AI credits for the whole lifecycle |
+| `spend` | Cumulative recorded runner time and AI credits |
+| `spend.historyComplete` | `false` when costs predating the recorded tally are unavailable |
 
 At initialization, approval, and replanning, baseline and controller SHAs are
 captured from the default branch. `baseSha` then remains fixed while the
@@ -630,6 +664,15 @@ Every completed run is charged exactly once to `spend`, keyed by run ID so a
 retried collection cannot double count. Rejected, failed, and superseded runs are
 included: the point is what a feature actually cost, not what its accepted work
 cost. Unlike evidence, `spend` survives a change of head commit.
+
+New lifecycles and migrated version-1 cost ledgers have
+`spend.historyComplete: true`. A version-1 record without `spend` starts with
+zero recorded-run counters and `historyComplete: false`: earlier costs are
+unknown, not zero. Issue status and newly created PR descriptions qualify those
+totals as partial history. The flag remains false through subsequent charging,
+repairs, and replanning; no historical backfill or existing PR rewrite occurs.
+Existing `job.costedRun` receipts are preserved to prevent charging a completed
+run again after migration.
 
 Runner time is the sum of each job's start-to-finish duration. GitHub reports
 zero billable time for public repositories, so billable minutes cannot be used.

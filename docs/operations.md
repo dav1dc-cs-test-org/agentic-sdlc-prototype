@@ -330,6 +330,50 @@ Also test pausing an in-flight job and a deliberately failing test on a disposab
 pilot. Do not treat local mocks as evidence that live credentials, billing,
 network policies, CodeQL licensing, or Copilot behavior work in your organization.
 
+## State Upgrades
+
+The controller writes `schemaVersion: 2`. Its shared loader accepts valid
+version-1 records with or without `spend`, validates their complete structure,
+and upgrades them in memory. Workers only read; the controller persists upgrades
+using the original state-file SHA before processing commands, PR disposition, or
+terminal-state early returns. Scheduled reconciliation includes all stored issue
+records, even when their issues or PRs are closed.
+
+Existing cost totals and `job.costedRun` receipts are preserved. Records without
+`spend` start a new recorded-cost tally with `spend.historyComplete: false`.
+Issue status and newly created PR summaries label these totals "earlier costs
+unavailable"; they are not the full historical lifecycle cost. Later runs add to
+the tally without clearing that warning. This migration does not reconstruct
+past costs or rewrite existing PR descriptions. Version-1 records that already
+have cost totals retain them with `historyComplete: true`.
+
+For an existing installation:
+
+1. Set `SDLC_ENABLED=false`. Wait for running controller and worker jobs to
+  finish, or cancel them in Actions, and cancel queued runs of the old revision.
+  The variable alone does not stop jobs already running.
+2. Deploy the reviewed upgrade to the default branch while disabled. Do not
+  edit or delete state records on `sdlc-state`, close issues or PRs, or relabel
+  issues to work around the old missing-`spend` validation error.
+3. Set `SDLC_ENABLED=true` and start a new controller run on the default branch,
+  leaving its optional issue input empty to reconcile all stored records, or
+  let the next scheduled run do so. Do not rerun an old failed workflow revision.
+4. Check that the controller succeeds, records now have `schemaVersion: 2`, and
+  affected issue summaries qualify their cost history. If an active lifecycle
+  reports a changed trusted revision, use `/sdlc revise <feedback>` and approve
+  the new plan. Migration does not bypass that existing gate. A lifecycle with
+  an open feature PR remains managed through PR review.
+
+A failed or conflicting migration write stops that issue's reconciliation before
+other effects. The next run reloads state: if the write never committed, it retries
+the migration; if the response was lost after the commit, it reads version 2 and
+does not migrate again. Malformed costs, invalid authority fields, and unknown
+schema versions still fail validation rather than being defaulted or discarded.
+
+Once version-2 records exist, older code that only understands version 1 is not
+a compatible rollback. Any rollback must retain version-2 read/write support;
+restoring old state can lose accepted work and cost receipts.
+
 ## Recovery
 
 Controller runs are serialized. Actions may coalesce pending events; every

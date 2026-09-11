@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { unzipSync } from 'fflate';
 import { digest } from './domain.ts';
 import { isProtectedPath, isTestPath, validateChanges } from './changes.ts';
-import { costSchema, lifecycleSchema, reportSchema, type Change, type Cost, type Policy, type Report } from './contracts.ts';
+import { costSchema, lifecycleSchema, migrateLifecycle, reportSchema, type Change, type Cost, type Policy, type Report } from './contracts.ts';
 import { assertPublishable, type Job, type Lifecycle, type Task } from './lifecycle.ts';
 import { RetryablePlatformError, type Comment, type Issue, type Platform, type RecordState, type Run } from './controller.ts';
 
@@ -119,12 +119,13 @@ export class GitHub implements Platform {
     try {
       const { data } = await this.api.repos.getContent({ ...this.scope, path: `issues/${number}.json`, ref: this.policy.stateBranch });
       if (Array.isArray(data) || data.type !== 'file' || data.size > 1_000_000) throw new Error('Invalid state file');
-      const state = lifecycleSchema.parse(JSON.parse(Buffer.from(data.content, 'base64').toString('utf8')));
+      const stored = JSON.parse(Buffer.from(data.content, 'base64').toString('utf8'));
+      const state = migrateLifecycle(stored);
       if (state.issueNumber !== number || state.branch !== `agentic/epic-${number}-v${state.plan?.version ?? 1}` &&
           state.phase !== 'researching' && state.phase !== 'paused' && state.phase !== 'blocked' && state.phase !== 'cancelled') {
         throw new Error('State identity mismatch');
       }
-      return { state, version: data.sha };
+      return { state, version: data.sha, needsMigration: stored.schemaVersion !== state.schemaVersion };
     } catch (error) { if (missing(error)) return undefined; throw error; }
   }
 
@@ -139,6 +140,7 @@ export class GitHub implements Platform {
     });
     if (!data.content?.sha) throw new Error('State write did not return a version');
     record.version = data.content.sha;
+    delete record.needsMigration;
   }
 
   private async ensureStateBranch(): Promise<void> {
@@ -388,6 +390,8 @@ export class GitHub implements Platform {
         body: `${marker}\nCloses #${state.issueNumber}\n\n## Approved plan\n\n${neutralizeClosingKeywords(state.plan!.body)}\n\n` +
           `Approved by @${state.approval!.actor}. Plan hash: \`${state.plan!.hash}\`.\n\n` +
           `Reviewed commit: \`${state.headSha}\`.\n\n## Cost\n\n` +
+          (state.spend.historyComplete ? '' :
+            '**Partial cost history:** earlier costs unavailable. Totals cover recorded runs only.\n\n') +
           `${(state.spend.runnerMs / 60_000).toFixed(1)} runner minutes and ` +
           `${state.spend.credits.toFixed(1)} AI credits across ${state.spend.runs} runs, ` +
           `including retries, repairs, and superseded plans. ` +

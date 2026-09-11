@@ -16,7 +16,7 @@ export interface Issue {
 }
 export interface Comment { id: number; body: string; actor: string; human: boolean; createdAt: string }
 export interface Run { id: number; status: string; conclusion: string | null; url: string }
-export interface RecordState { state: Lifecycle; version?: string }
+export interface RecordState { state: Lifecycle; version?: string; needsMigration?: boolean }
 
 export class RetryablePlatformError extends Error {
   readonly retryable = true;
@@ -79,6 +79,7 @@ export class Controller {
   async tick(number: number, intake?: Intake): Promise<void> {
     const issue = await this.platform.issue(number);
     let record = await this.platform.load(number);
+    if (record?.needsMigration) await this.platform.save(record);
     if (!record) {
       if (!intake || intake.issueNumber !== number || !issue.open || !issue.labeled ||
           issue.author.toLowerCase() !== intake.requester.toLowerCase() || !await this.platform.canWrite(intake.actor)) return;
@@ -417,7 +418,8 @@ export class Controller {
 
   private spend(state: Lifecycle): string {
     const { runs, runnerMs, credits, nearLimit, preempted } = state.spend;
-    return `Cost: ${(runnerMs / 60_000).toFixed(1)} runner minutes, ${credits.toFixed(1)} AI credits ` +
+    const label = state.spend.historyComplete ? 'Cost' : 'Recorded cost (earlier costs unavailable)';
+    return `${label}: ${(runnerMs / 60_000).toFixed(1)} runner minutes, ${credits.toFixed(1)} AI credits ` +
       `over ${runs} run${runs === 1 ? '' : 's'}. Near the ${this.policy.maxJobCredits}-credit job limit: ` +
       `${nearLimit}. Pre-empted by it: ${preempted}.`;
   }
