@@ -67,7 +67,8 @@
         "worldclock-time",
         "worldclock-geometry"
       ],
-      "completed": false
+      "completed": false,
+      "issueNumber": 8
     },
     {
       "id": "worldclock-render-document",
