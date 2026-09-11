@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { Octokit } from '@octokit/rest';
 import { strToU8, zipSync } from 'fflate';
-import { GitHub, decodeReportArchive, neutralizeClosingKeywords } from '../src/github.ts';
+import { GitHub, decodeCostArchive, decodeReportArchive, neutralizeClosingKeywords } from '../src/github.ts';
 import { RetryablePlatformError } from '../src/controller.ts';
 import { policySchema } from '../src/contracts.ts';
 import { createLifecycle, startJob } from '../src/lifecycle.ts';
@@ -109,6 +109,36 @@ test('completed runs remain retryable while their result artifact is not yet vis
   const github = new GitHub('owner/repo', policy, 'sdlc[bot]', api(() => ({ total_count: 0, artifacts: [] })));
   await assert.rejects(github.report({ id: 1, status: 'completed', conclusion: 'success', url: 'https://github.com/run/1' }, job),
     error => error instanceof RetryablePlatformError);
+});
+
+test('cost sums job durations and reads the workflow-written budget outcome', async () => {
+  const listJobs = () => undefined;
+  const listArtifacts = () => undefined;
+  const jobs = [
+    { started_at: '2026-09-11T15:39:40Z', completed_at: '2026-09-11T15:40:24Z' },
+    { started_at: '2026-09-11T15:40:28Z', completed_at: '2026-09-11T15:44:15Z' },
+    { started_at: null, completed_at: '2026-09-11T15:44:19Z' },
+    { started_at: '2026-09-11T15:46:23Z', completed_at: '2026-09-11T15:46:00Z' },
+  ];
+  const build = (artifacts: unknown[], archive: Uint8Array) => new GitHub('owner/repo', policy, 'sdlc[bot]', {
+    actions: {
+      listJobsForWorkflowRun: listJobs, listWorkflowRunArtifacts: listArtifacts,
+      downloadArtifact: async () => ({ data: archive }),
+    },
+    paginate: async (route: unknown) => (route === listJobs ? jobs : artifacts),
+  } as unknown as Octokit);
+  const run = { id: 1, status: 'completed' as const, conclusion: 'success', url: 'https://github.com/run/1' };
+  const archive = zipSync({ 'cost.json': strToU8('{"credits":50.8,"preempted":true}') });
+
+  // 44s plus 227s; the unstarted and negative-duration jobs contribute nothing.
+  assert.deepEqual(await build([{ id: 9, name: 'sdlc-cost', expired: false, size_in_bytes: 90 }], archive).cost(run),
+    { runnerMs: 271_000, credits: 50.8, preempted: true });
+  for (const artifacts of [[], [{ id: 9, name: 'sdlc-cost', expired: true, size_in_bytes: 90 }],
+    [{ id: 9, name: 'sdlc-cost', expired: false, size_in_bytes: 20_000 }]]) {
+    assert.deepEqual(await build(artifacts, archive).cost(run), { runnerMs: 271_000, credits: 0, preempted: false });
+  }
+  assert.throws(() => decodeCostArchive(zipSync({ 'other.json': strToU8('{}') })), /Missing/);
+  assert.throws(() => decodeCostArchive(zipSync({ 'cost.json': strToU8('{"credits":-1,"preempted":false}') })));
 });
 
 test('artifact discovery consumes the complete paginated result set', async () => {

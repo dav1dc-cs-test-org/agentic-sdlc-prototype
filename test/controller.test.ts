@@ -69,6 +69,12 @@ class FakePlatform implements Platform {
     if (this.reportFailure) throw this.reportFailure;
     return this.reports.get(run.id)!;
   }
+  costs: { runnerMs: number; credits: number; preempted: boolean }[] = [];
+  charged: number[] = [];
+  async cost(run: Run) {
+    this.charged.push(run.id);
+    return this.costs.shift() ?? { runnerMs: 60_000, credits: 10, preempted: false };
+  }
   async applyChanges(_state: Lifecycle, _job: Job, _changes: Change[]) {
     this.changed += 1;
     return this.changed.toString(16).padStart(40, '0');
@@ -284,6 +290,40 @@ test('documentation changes invalidate gate evidence and re-verify before review
   platform.finish();
   await controller.tick(123);
   assert.equal(platform.published, 1);
+});
+
+test('every completed run is charged once, including one the credit limiter pre-empted', async () => {
+  const { platform, controller } = await coding();
+  const before = platform.stored!.state.spend;
+  assert.ok(before.runs > 0, 'earlier stages must already be charged');
+
+  platform.costs = [{ runnerMs: 120_000, credits: 190, preempted: false }];
+  platform.finish({ changes: [{ path: 'feature.txt', content: 'First' }] });
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.spend.nearLimit, 1);
+  assert.equal(platform.stored!.state.spend.preempted, 0);
+
+  platform.costs = [{ runnerMs: 30_000, credits: 205, preempted: true }];
+  platform.finish({ changes: [{ path: 'feature.txt', content: 'Both' }] });
+  await controller.tick(123);
+  const spend = platform.stored!.state.spend;
+  assert.equal(spend.preempted, 1);
+  assert.equal(spend.nearLimit, 1, 'a pre-empted run must not also count as near the limit');
+  assert.equal(spend.credits, before.credits + 395);
+  assert.equal(spend.runnerMs, before.runnerMs + 150_000);
+
+  const charged = platform.charged.length;
+  await controller.tick(123);
+  assert.equal(platform.charged.length, charged, 'a run is charged once, not once per tick');
+});
+
+test('a rejected result still consumes budget', async () => {
+  const { platform, controller } = await coding();
+  const before = platform.stored!.state.spend.credits;
+  platform.costs = [{ runnerMs: 45_000, credits: 33, preempted: false }];
+  platform.finish({ jobId: '123-999' });
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.spend.credits, before + 33);
 });
 
 test('pause discards in-flight results; only a maintainer can resume', async () => {

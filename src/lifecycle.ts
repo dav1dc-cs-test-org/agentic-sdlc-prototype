@@ -24,6 +24,15 @@ export interface Job {
   createdAt: string;
   dispatchedAt?: string;
   runId?: number;
+  costedRun?: number;
+}
+
+export interface Spend {
+  runs: number;
+  runnerMs: number;
+  credits: number;
+  nearLimit: number;
+  preempted: number;
 }
 
 export interface Evidence {
@@ -56,6 +65,7 @@ export interface Lifecycle {
   sequence: number;
   repairs: number;
   failures: number;
+  spend: Spend;
   feedback: string;
   resumePhase?: Phase;
   error?: string;
@@ -70,7 +80,19 @@ export function createLifecycle(issueNumber: number, requester: string, request:
     schemaVersion: 1, issueNumber, requester, request, phase: 'researching',
     baseSha, headSha: baseSha, baseBranch, controlSha: baseSha, branch: `agentic/epic-${issueNumber}-v1`,
     tasks: [], retiredTasks: [], evidence: [], processedEvents: [], sequence: 0, repairs: 0, failures: 0, feedback: '',
+    spend: { runs: 0, runnerMs: 0, credits: 0, nearLimit: 0, preempted: 0 },
   };
+}
+
+// A run the limiter pre-empted is counted only as pre-empted: the two outcomes are exclusive.
+export function recordSpend(state: Lifecycle, cost: {
+  runnerMs: number; credits: number; preempted: boolean;
+}, maxCredits: number): void {
+  state.spend.runs += 1;
+  state.spend.runnerMs += Math.max(0, cost.runnerMs);
+  state.spend.credits += Math.max(0, cost.credits);
+  if (cost.preempted) state.spend.preempted += 1;
+  else if (maxCredits > 0 && cost.credits >= maxCredits * 0.8) state.spend.nearLimit += 1;
 }
 
 export function validateTasks(tasks: Task[], maximum: number): void {

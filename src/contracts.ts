@@ -24,6 +24,13 @@ export const changeSchema = z.object({
 }).strict();
 export type Change = z.infer<typeof changeSchema>;
 
+// Written by a workflow post-step, not by the agent, so the agent cannot forge its own cost.
+export const costSchema = z.object({
+  credits: z.number().min(0).max(100_000).finite(),
+  preempted: z.boolean(),
+}).strict();
+export type Cost = z.infer<typeof costSchema>;
+
 export const reportSchema = z.object({
   jobId: z.string().regex(/^\d+-\d+$/),
   inputSha: shaSchema,
@@ -42,6 +49,7 @@ export const policySchema = z.object({
   maxJobAttempts: numberSchema.max(3), maxJobs: numberSchema.max(100),
   jobTimeoutMinutes: numberSchema.max(180), dispatchGraceMinutes: numberSchema.max(30),
   maxFiles: numberSchema.max(60), maxChangeBytes: numberSchema.max(1_000_000),
+  maxJobCredits: numberSchema.max(10_000),
   protectedPaths: z.array(text).min(1), testPaths: z.array(text).min(1),
   sourcePaths: z.array(text).min(1), docsPaths: z.array(text).min(1),
   coverage: z.object({
@@ -87,6 +95,7 @@ const jobSchema = z.object({
   taskId: z.string().nullable(), feedback: z.string().max(24000),
   attempt: numberSchema.max(3), createdAt: z.iso.datetime(),
   dispatchedAt: z.iso.datetime().optional(), runId: numberSchema.optional(),
+  costedRun: numberSchema.optional(),
 }).strict();
 
 export const lifecycleSchema = z.object({
@@ -107,6 +116,11 @@ export const lifecycleSchema = z.object({
   }).strict()).max(100),
   processedEvents: z.array(z.string()).max(10000),
   sequence: z.number().int().min(0), repairs: z.number().int().min(0), failures: z.number().int().min(0),
+  spend: z.object({
+    runs: z.number().int().min(0), runnerMs: z.number().min(0).finite(),
+    credits: z.number().min(0).finite(), nearLimit: z.number().int().min(0),
+    preempted: z.number().int().min(0),
+  }).strict(),
   feedback: z.string().max(24000), resumePhase: phaseSchema.optional(), error: z.string().max(12000).optional(),
   prNumber: numberSchema.optional(),
 }).strict() satisfies z.ZodType<Lifecycle>;

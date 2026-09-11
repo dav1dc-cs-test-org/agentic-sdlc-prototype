@@ -2,7 +2,7 @@ import { approvePlan, makePlan, parseCommand, type Phase } from './domain.ts';
 import { reportSchema, type Change, type Intake, type Policy, type Report } from './contracts.ts';
 import { validateChanges } from './changes.ts';
 import {
-  assertCurrentResult, assertPublishable, createLifecycle, nextTask, recordChange,
+  assertCurrentResult, assertPublishable, createLifecycle, nextTask, recordChange, recordSpend,
   requestRepair, startJob, validateTasks, type Job, type Lifecycle, type Stage, type Task,
 } from './lifecycle.ts';
 
@@ -37,6 +37,7 @@ export interface Platform {
   findRun(job: Job): Promise<Run | undefined>;
   cancelRun(runId: number): Promise<void>;
   report(run: Run, job: Job): Promise<Report>;
+  cost(run: Run): Promise<{ runnerMs: number; credits: number; preempted: boolean }>;
   applyChanges(state: Lifecycle, job: Job, changes: Change[]): Promise<string>;
   publish(state: Lifecycle): Promise<number>;
   pullRequest(number: number): Promise<'open' | 'closed' | 'merged'>;
@@ -308,6 +309,12 @@ export class Controller {
       }
       return;
     }
+    // Every completed run is charged, accepted or not: a rejected result still consumed the budget.
+    if (job.costedRun !== run.id) {
+      recordSpend(state, await this.platform.cost(run), this.policy.maxJobCredits);
+      job.costedRun = run.id;
+      await this.platform.save(record);
+    }
     if (run.conclusion !== 'success' &&
       !(run.conclusion === 'failure' && ['scan', 'validate'].includes(job.stage))) {
       return this.failed(record, `Worker ${run.conclusion ?? 'failed'}: ${run.url}`);
@@ -408,6 +415,13 @@ export class Controller {
     }
   }
 
+  private spend(state: Lifecycle): string {
+    const { runs, runnerMs, credits, nearLimit, preempted } = state.spend;
+    return `Cost: ${(runnerMs / 60_000).toFixed(1)} runner minutes, ${credits.toFixed(1)} AI credits ` +
+      `over ${runs} run${runs === 1 ? '' : 's'}. Near the ${this.policy.maxJobCredits}-credit job limit: ` +
+      `${nearLimit}. Pre-empted by it: ${preempted}.`;
+  }
+
   private async status(state: Lifecycle): Promise<void> {
     if (state.phase === 'awaiting_approval' && state.plan) {
       await this.platform.comment(state.issueNumber, `plan:${state.plan.hash}`,
@@ -418,6 +432,7 @@ export class Controller {
       `## Agentic SDLC\n\nState: **${state.phase}**\n\n` +
       `Tasks: ${state.tasks.filter(task => task.completed).length}/${state.tasks.length}. ` +
       `Jobs: ${state.sequence}/${this.policy.maxJobs}. Repairs: ${state.repairs}/${this.policy.maxRepairs}.\n\n` +
+      `${this.spend(state)}\n\n` +
       (state.job ? `Active job: \`${state.job.id}\` (${state.job.stage}).\n\n` : '') +
       (state.error ? `${state.error}\n\n` : '') +
       (state.prNumber ? `Feature PR: #${state.prNumber}\n\n` : '') +

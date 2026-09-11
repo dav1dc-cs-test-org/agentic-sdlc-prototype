@@ -89,6 +89,24 @@ steps:
       SDLC_CONTROL_SHA: ${{ inputs.control_sha }}
       SDLC_STAGE: ${{ inputs.stage }}
 post-steps:
+  - name: Record the inference budget outcome
+    if: always()
+    env:
+      CREDITS: ${{ steps.parse-mcp-gateway.outputs.aic }}
+      PREEMPTED: ${{ steps.parse-mcp-gateway.outputs.ai_credits_rate_limit_error }}
+    run: |
+      mkdir -p .sdlc-cost
+      case "$CREDITS" in ''|*[!0-9.]*) CREDITS=0 ;; esac
+      case "$PREEMPTED" in true) PREEMPTED=true ;; *) PREEMPTED=false ;; esac
+      printf '{"credits":%s,"preempted":%s}\n' "$CREDITS" "$PREEMPTED" > .sdlc-cost/cost.json
+  - name: Return the workflow-measured cost
+    if: always()
+    uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+    with:
+      name: sdlc-cost
+      path: .sdlc-cost/cost.json
+      if-no-files-found: error
+      retention-days: 14
   - name: Return the untrusted worker proposal
     if: always()
     uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f

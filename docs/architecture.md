@@ -298,10 +298,13 @@ sequenceDiagram
   HwWorker->>HwWorker: Execute assigned role or deterministic checks
   HwWorker->>HwArtifacts: Upload sdlc-result and supporting evidence
   HwWorker-->>HwActions: Workflow concludes
+  HwActions->>HwArtifacts: Upload workflow-measured sdlc-cost
   HwActions-)HwControl: workflow_run completion event
   HwControl->>HwActions: Discover expected workflow, actor, revision, and run
   HwActions-->>HwControl: Matching first-attempt run metadata
   HwControl->>HwState: Bind run ID to active job
+  HwControl->>HwArtifacts: Read job durations and sdlc-cost
+  HwControl->>HwState: Charge the run once, accepted or not
   HwControl->>HwArtifacts: Download exactly one eligible result artifact
   HwArtifacts-->>HwControl: Untrusted result JSON
   HwControl->>HwControl: Check schema, current job, plan, source, and policy
@@ -335,6 +338,11 @@ The controller accepts one unexpired `sdlc-result` artifact, with bounded
 compressed and result-file sizes. It parses `result.json` as data and never
 executes downloaded code. Agent proposals remain untrusted even when their
 workflow provenance matches.
+
+The separate `sdlc-cost` artifact is written by a workflow post-step rather than
+by the agent, so it records what the run actually consumed rather than what the
+agent claims. Deterministic check runs upload no such artifact and are charged
+runner time only.
 
 For deterministic checks, the dedicated `SDLC Check Result` job must succeed.
 That job can report a failed scanner or test even when the overall workflow
@@ -575,6 +583,7 @@ the branch is created lazily when the first accepted text change is published.
 | `plan.hash` | Immutable plan content and version fingerprint |
 | `job.inputSha` | Source commit supplied to a particular worker |
 | `job.runId` | Accepted GitHub run for the registered job |
+| `spend` | Cumulative runner time and AI credits for the whole lifecycle |
 
 At initialization, approval, and replanning, baseline and controller SHAs are
 captured from the default branch. `baseSha` then remains fixed while the
@@ -611,6 +620,26 @@ does not approve or merge the PR. Configured branch rules, normal CI, and human
 review govern merging. Selecting the App as the required check's expected
 source is an installation step, not something these workflows configure.
 
+### Cost Accounting
+
+Every completed run is charged exactly once to `spend`, keyed by run ID so a
+retried collection cannot double count. Rejected, failed, and superseded runs are
+included: the point is what a feature actually cost, not what its accepted work
+cost. Unlike evidence, `spend` survives a change of head commit.
+
+Runner time is the sum of each job's start-to-finish duration. GitHub reports
+zero billable time for public repositories, so billable minutes cannot be used.
+
+Credits and the pre-emption flag come from a `sdlc-cost` artifact written by a
+workflow post-step, not by the agent, so an agent cannot understate its own cost.
+The post-step reads the compiler's `parse-mcp-gateway` outputs, where
+`ai_credits_rate_limit_error` records that the firewall proxy refused a further
+inference. That distinguishes a run that finished near the cap from one the
+limiter actually interrupted, whose result may be incomplete. Because the cap is
+applied between inferences rather than mid-request, a pre-empted run can finish
+slightly above it, so the count of pre-emptions is the reliable signal and the
+credit total alone is not.
+
 ### Retention and Limits
 
 | Control | Current value |
@@ -622,6 +651,7 @@ source is an installation step, not something these workflows configure.
 | Total registered jobs per lifecycle | 40 |
 | Changed files per proposal | 30 |
 | Total proposed text bytes | 512,000 |
+| AI credits per agent run | 200 |
 | Agent execution timeout | 30 minutes |
 | Agent job timeout | 45 minutes |
 | Controller timeout | 15 minutes |

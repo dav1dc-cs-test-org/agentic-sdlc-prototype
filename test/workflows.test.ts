@@ -73,6 +73,16 @@ test('manual workflows pin actions to immutable commits and never persist git cr
   }
 });
 
+test('cost accounting stays bound to the compiler and policy it measures', () => {
+  const compiled = readFileSync('.github/workflows/sdlc-agent.lock.yml', 'utf8');
+  const policy = JSON.parse(readFileSync('.github/sdlc/policy.json', 'utf8'));
+  // A renamed gh-aw step would silently report every run as never pre-empted.
+  assert.ok(compiled.includes('id: parse-mcp-gateway'), 'the gh-aw gateway parser step must still exist');
+  assert.match(compiled, /PREEMPTED: \$\{\{ steps\.parse-mcp-gateway\.outputs\.ai_credits_rate_limit_error \}\}/);
+  assert.match(compiled, /GH_AW_MAX_AI_CREDITS: "(\d+)"/);
+  assert.equal(Number(/GH_AW_MAX_AI_CREDITS: "(\d+)"/.exec(compiled)![1]), policy.maxJobCredits);
+});
+
 test('every agent stage has a valid repository-scoped role profile', () => {
   const files = readdirSync('.github/agents');
   for (const stage of ['research', 'decompose', 'code', 'security', 'test', 'document', 'review']) {

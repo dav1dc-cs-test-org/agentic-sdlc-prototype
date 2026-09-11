@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { unzipSync } from 'fflate';
 import { digest } from './domain.ts';
 import { isProtectedPath, isTestPath, validateChanges } from './changes.ts';
-import { lifecycleSchema, reportSchema, type Change, type Policy, type Report } from './contracts.ts';
+import { costSchema, lifecycleSchema, reportSchema, type Change, type Cost, type Policy, type Report } from './contracts.ts';
 import { assertPublishable, type Job, type Lifecycle, type Task } from './lifecycle.ts';
 import { RetryablePlatformError, type Comment, type Issue, type Platform, type RecordState, type Run } from './controller.ts';
 
@@ -20,6 +20,16 @@ export function decodeReportArchive(bytes: Uint8Array): Report {
   const report = files['result.json'];
   if (!report || report.byteLength > 2_000_000) throw new Error('Missing or oversized result.json');
   return reportSchema.parse(JSON.parse(Buffer.from(report).toString('utf8')));
+}
+
+export function decodeCostArchive(bytes: Uint8Array): Cost {
+  if (bytes.byteLength > 10_000) throw new Error('Cost artifact exceeds size limit');
+  const files = unzipSync(bytes, {
+    filter: file => file.name === 'cost.json' && file.originalSize <= 10_000,
+  });
+  const cost = files['cost.json'];
+  if (!cost) throw new Error('Missing cost.json');
+  return costSchema.parse(JSON.parse(Buffer.from(cost).toString('utf8')));
 }
 
 function missing(error: unknown): boolean {
@@ -255,6 +265,28 @@ export class GitHub implements Platform {
     return decodeReportArchive(new Uint8Array(response.data as ArrayBuffer));
   }
 
+  async cost(run: Run): Promise<{ runnerMs: number; credits: number; preempted: boolean }> {
+    const jobs = await this.api.paginate(this.api.actions.listJobsForWorkflowRun, {
+      ...this.scope, run_id: run.id, filter: 'latest', per_page: 100,
+    });
+    // Public repositories report zero billable time, so charge the summed job durations instead.
+    const runnerMs = jobs.reduce((total, item) => {
+      const started = Date.parse(item.started_at ?? '');
+      const completed = Date.parse(item.completed_at ?? '');
+      return total + (completed > started ? completed - started : 0);
+    }, 0);
+    const artifacts = await this.api.paginate(this.api.actions.listWorkflowRunArtifacts, {
+      ...this.scope, run_id: run.id, per_page: 100,
+    });
+    const matches = artifacts.filter(artifact => artifact.name === 'sdlc-cost' && !artifact.expired);
+    // Deterministic check runs upload no cost artifact and consume no credits.
+    if (matches.length !== 1 || matches[0]!.size_in_bytes > 10_000) return { runnerMs, credits: 0, preempted: false };
+    const response = await this.api.actions.downloadArtifact({
+      ...this.scope, artifact_id: matches[0]!.id, archive_format: 'zip',
+    });
+    return { runnerMs, ...decodeCostArchive(new Uint8Array(response.data as ArrayBuffer)) };
+  }
+
   private async tree(sha: string) {
     const { data: commit } = await this.api.git.getCommit({ ...this.scope, commit_sha: sha });
     const { data } = await this.api.git.getTree({ ...this.scope, tree_sha: commit.tree.sha, recursive: '1' });
@@ -355,7 +387,12 @@ export class GitHub implements Platform {
         title: `[Agentic SDLC] ${(await this.issue(state.issueNumber)).title}`.slice(0, 200),
         body: `${marker}\nCloses #${state.issueNumber}\n\n## Approved plan\n\n${neutralizeClosingKeywords(state.plan!.body)}\n\n` +
           `Approved by @${state.approval!.actor}. Plan hash: \`${state.plan!.hash}\`.\n\n` +
-          `Reviewed commit: \`${state.headSha}\`.\n\n## Evidence\n\n${evidence}\n\n` +
+          `Reviewed commit: \`${state.headSha}\`.\n\n## Cost\n\n` +
+          `${(state.spend.runnerMs / 60_000).toFixed(1)} runner minutes and ` +
+          `${state.spend.credits.toFixed(1)} AI credits across ${state.spend.runs} runs, ` +
+          `including retries, repairs, and superseded plans. ` +
+          `${state.spend.nearLimit} run(s) finished near the per-job credit limit; ` +
+          `${state.spend.preempted} were pre-empted by it.\n\n## Evidence\n\n${evidence}\n\n` +
           'Agent reviews are advisory. A human must review and merge this PR. No automatic merge is enabled.',
       })).data.number;
     }
