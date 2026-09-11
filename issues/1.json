@@ -34,8 +34,8 @@
         "resolveLocalTime is pure: it takes the instant as an explicit parameter and performs no Date.now(), process.env, file, network, or console I/O."
       ],
       "dependsOn": [],
-      "completed": false,
-      "issueNumber": 6
+      "issueNumber": 6,
+      "completed": false
     },
     {
       "id": "worldclock-geometry",
@@ -50,8 +50,8 @@
         "All geometry functions are pure with no I/O and no dependency on Date.now(), process.env, or external state."
       ],
       "dependsOn": [],
-      "completed": false,
-      "issueNumber": 7
+      "issueNumber": 7,
+      "completed": false
     },
     {
       "id": "worldclock-render-single",
@@ -67,8 +67,8 @@
         "worldclock-time",
         "worldclock-geometry"
       ],
-      "completed": false,
-      "issueNumber": 8
+      "issueNumber": 8,
+      "completed": false
     },
     {
       "id": "worldclock-render-document",
@@ -84,10 +84,11 @@
       "dependsOn": [
         "worldclock-render-single"
       ],
-      "completed": false,
-      "issueNumber": 9
+      "issueNumber": 9,
+      "completed": false
     }
   ],
+  "tasksLinked": true,
   "retiredTasks": [],
   "job": {
     "id": "1-13",
@@ -99,7 +100,8 @@
     "feedback": "",
     "attempt": 1,
     "createdAt": "2026-09-11T11:47:21.828Z",
-    "dispatchedAt": "2026-09-11T11:47:23.006Z"
+    "dispatchedAt": "2026-09-11T11:47:23.006Z",
+    "runId": 34595717986
   },
   "evidence": [],
   "processedEvents": [
@@ -114,6 +116,5 @@
   "sequence": 13,
   "repairs": 1,
   "failures": 0,
-  "feedback": "",
-  "tasksLinked": true
+  "feedback": ""
 }
