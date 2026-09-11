@@ -3,7 +3,7 @@
   "issueNumber": 1,
   "requester": "dav1dc-github",
   "request": "[Feature]\n\n### Objective\n\nProvide a dependency-free TypeScript module that renders multiple analog clock faces as a single standalone SVG document, one clock per requested IANA timezone, so a reader can see the current time across several regions at a glance.\n\nThe module is a pure rendering library: callers supply the instant to render, and the module returns SVG markup. This keeps output deterministic and fully testable under Node's built-in test runner.\n\n### Acceptance Criteria\n\nTime conversion\n\nREQ-1: Given a UTC instant and an IANA timezone identifier, the module resolves the local hour (0–23), minute, and second in that zone.\nREQ-2: Zones with non-integer UTC offsets resolve correctly, verified for Asia/Kolkata (+05:30), Asia/Kathmandu (+05:45), and Australia/Eucla (+08:45).\nREQ-3: Daylight saving transitions resolve correctly, verified for the same instant rendered in America/New_York and Europe/London on dates either side of a transition.\nREQ-4: An unrecognised timezone identifier throws an error naming the offending identifier. The error is thrown, not swallowed or defaulted to UTC.\n\nHand geometry\n\nREQ-5: The second hand is at seconds × 6 degrees clockwise from twelve.\nREQ-6: The minute hand is at minutes × 6 + seconds × 0.1 degrees, so it advances smoothly within the minute.\nREQ-7: The hour hand is at (hour mod 12) × 30 + minutes × 0.5 degrees, so 6:30 local time places it midway between 6 and 7.\nREQ-8: Local midnight and local noon both place the hour hand at 0 degrees.\nREQ-9: All returned angles are normalised to the range [0, 360).\n\nRendering\n\nREQ-10: Rendering one clock returns an SVG group containing a circular face, twelve hour ticks, three hands, and a text label showing the timezone.\nREQ-11: Rendering a list of timezones returns one complete, well-formed SVG document containing exactly one clock group per entry, laid out left to right in the order supplied.\nREQ-12: The same (instant, timezone list) pair always produces byte-identical output.\nREQ-13: Timezone labels are escaped so that &, <, and > cannot break out of the SVG text element.\nREQ-14: An empty timezone list returns a valid empty SVG document rather than throwing.\nREQ-15: A duplicated timezone in the list renders that clock once per occurrence.\n\n### Constraints and Non-goals\n\nHard constraints — the change is rejected if any are violated\n\nNo new runtime or development dependencies. package.json and package-lock.json are protected paths. Use Node built-ins only; resolve timezones with Intl.DateTimeFormat and formatToParts, not a vendored timezone database.\nAll new source goes under src/worldclock/. Top-level src/*.ts and tsconfig.json are protected and must not be modified.\nAll new tests go under test and match test/**/*.test.ts.\nNo binary files. SVG is emitted as text; no PNG, ICO, or font assets.\nOverall coverage must not drop. The baseline is 90.77% lines and 85.66% branches with a permitted drop of zero, so every new branch — including each error path — needs a test.\nRendering functions must be pure: no Date.now(), no process.env, no file, network, or console I/O. The instant is always a parameter.\nScope must fit six tasks or fewer.\n\nNon-goals\n\nNo browser application, framework, bundler, or build step.\nNo live ticking, animation, or setInterval.\nNo CLI entry point. An uncovered entry module would breach the coverage gate.\nNo persistence, configuration files, user preferences, or network calls.\nNo digital time display, no date display, no analog/digital toggle.\n\n### Context\n\nFollow the existing module conventions in lifecycle.ts and the test style in lifecycle.test.ts, including .ts extensions on relative imports.\nBudgets and protected paths are defined in policy.json.\nVerification runs via npm run verify.",
-  "phase": "decomposing",
+  "phase": "coding",
   "baseSha": "d14a05e508bcd6bcb05b9ffa58ec8748af93e94d",
   "headSha": "d14a05e508bcd6bcb05b9ffa58ec8748af93e94d",
   "controlSha": "d14a05e508bcd6bcb05b9ffa58ec8748af93e94d",
@@ -20,21 +20,73 @@
     "planHash": "8df09500fc57e7080783e4feee73956e807e1487a8b94aa6b37eae6e247a3126",
     "at": "2026-09-11T14:42:53Z"
   },
-  "tasks": [],
+  "tasks": [
+    {
+      "id": "worldclock-time",
+      "title": "Implement timezone-aware local time resolution",
+      "description": "Create src/worldclock/time.ts exporting resolveLocalTime(instant: Date, timeZone: string): { hour: number; minute: number; second: number }. Use Intl.DateTimeFormat with hourCycle: 'h23' and formatToParts to derive local hour (0-23), minute, and second from a UTC instant and an IANA timezone identifier. Do not use Date.now(), process.env, or any file/network/console I/O; the instant is always an explicit parameter. Wrap Intl.DateTimeFormat construction/formatting in a try/catch and on failure throw a new Error naming the offending timezone identifier (do not default to UTC or swallow the error). Follow the module conventions in src/lifecycle.ts (named exports, .ts extensions on relative imports, strict TypeScript). Add tests under test/worldclock/time.test.ts (or test/worldclock.time.test.ts) using node:assert/strict and node:test, mirroring test/lifecycle.test.ts style.",
+      "acceptance": [
+        "REQ-1: Given a UTC instant and IANA timezone, resolveLocalTime returns correct local hour (0-23), minute, and second.",
+        "REQ-2: Fractional UTC-offset zones resolve correctly: verified with test cases for Asia/Kolkata (+05:30), Asia/Kathmandu (+05:45), and Australia/Eucla (+08:45).",
+        "REQ-3: DST transitions resolve correctly: verified for the same instant rendered in America/New_York and Europe/London on dates either side of a transition.",
+        "REQ-4: An unrecognised timezone identifier causes resolveLocalTime to throw an Error whose message includes the offending identifier; the error is not swallowed or defaulted to UTC.",
+        "resolveLocalTime contains no Date.now(), process.env, or file/network/console I/O; the instant is always taken as a parameter.",
+        "New tests live under test/**/*.test.ts and do not modify any existing baseline test."
+      ],
+      "dependsOn": [],
+      "completed": false
+    },
+    {
+      "id": "worldclock-geometry",
+      "title": "Implement clock hand angle geometry functions",
+      "description": "Create src/worldclock/geometry.ts exporting pure functions secondHandAngle(second: number): number, minuteHandAngle(minute: number, second: number): number, and hourHandAngle(hour: number, minute: number): number. Each function computes the documented formula and normalises the result into the range [0, 360) using ((deg % 360) + 360) % 360. No I/O or side effects. Add tests under test/worldclock/geometry.test.ts (or test/worldclock.geometry.test.ts) covering boundary and wrap-around inputs.",
+      "acceptance": [
+        "REQ-5: secondHandAngle(second) equals second * 6 degrees clockwise from twelve, normalised to [0, 360).",
+        "REQ-6: minuteHandAngle(minute, second) equals minute * 6 + second * 0.1 degrees, normalised to [0, 360).",
+        "REQ-7: hourHandAngle(hour, minute) equals (hour % 12) * 30 + minute * 0.5 degrees, e.g. hour=6, minute=30 yields a value midway between the 6 and 7 hour positions, normalised to [0, 360).",
+        "REQ-8: hourHandAngle at local midnight (hour=0, minute=0) and local noon (hour=12, minute=0) both return 0 degrees.",
+        "REQ-9: All three functions return angles strictly within [0, 360) for inputs that would otherwise exceed or reach 360 or be negative before normalisation.",
+        "New tests live under test/**/*.test.ts and do not modify any existing baseline test."
+      ],
+      "dependsOn": [],
+      "completed": false
+    },
+    {
+      "id": "worldclock-render-single",
+      "title": "Render a single analog clock face as an SVG group",
+      "description": "Create src/worldclock/render.ts exporting escapeXml(value: string): string and renderClock(instant: Date, timeZone: string, x: number): string. escapeXml must replace &, <, and > (and, defensively, \" and ') with entity references so a timezone label cannot break out of SVG text/attribute context. renderClock must call resolveLocalTime (from worldclock-time) and the geometry functions (from worldclock-geometry) to build a <g transform=\"translate(x,0)\"> containing: one circular face (<circle>), twelve fixed hour-tick <line> elements, three hand <line> elements (hour, minute, second) positioned via trigonometry from the computed angles, and a <text> element with the escaped timezone label. renderClock must be pure: no Date.now(), process.env, or file/network/console I/O; instant and timeZone are explicit parameters, and numeric output must use a fixed-precision formatting helper so results are deterministic. Add tests under test/worldclock/render.test.ts (or test/worldclock.render.test.ts).",
+      "acceptance": [
+        "REQ-10: renderClock returns an SVG group containing exactly one <circle> face, twelve hour-tick <line>s, three hand <line>s, and one <text> label showing the timezone identifier.",
+        "REQ-13: A timezone label containing &, <, or > is escaped by escapeXml so the characters cannot break out of the SVG <text> element; a test exercises escapeXml directly and/or via a label containing these characters.",
+        "renderClock and escapeXml use no Date.now(), process.env, or file/network/console I/O.",
+        "Calling renderClock twice with identical (instant, timeZone, x) arguments returns byte-identical output.",
+        "New tests live under test/**/*.test.ts and do not modify any existing baseline test."
+      ],
+      "dependsOn": [
+        "worldclock-time",
+        "worldclock-geometry"
+      ],
+      "completed": false
+    },
+    {
+      "id": "worldclock-render-document",
+      "title": "Assemble multi-timezone clocks into one SVG document",
+      "description": "Create src/worldclock/document.ts exporting renderClocks(instant: Date, timeZones: string[]): string. It must map timeZones left-to-right into renderClock groups (from worldclock-render-single) at increasing fixed x-offsets, join them, and wrap the result in a single well-formed root <svg ...>...</svg> element sized deterministically from timeZones.length. Duplicated timezone identifiers in the list must render independently, once per occurrence, in the supplied order. An empty timeZones array must return a valid, well-formed empty <svg> document (an <svg> root with no clock groups) rather than throwing. All output must be deterministic: no Date.now(), process.env, or file/network/console I/O, and identical (instant, timeZones) input must produce byte-identical (=== equal) string output across calls. Add tests under test/worldclock/document.test.ts (or test/worldclock.document.test.ts).",
+      "acceptance": [
+        "REQ-11: renderClocks returns one complete, well-formed SVG document containing exactly one clock group per entry in timeZones, laid out left to right in the order supplied.",
+        "REQ-12: Calling renderClocks twice with the same (instant, timeZones) arguments produces byte-identical (=== equal) string output.",
+        "REQ-14: renderClocks([]) (or an empty timeZones array for any instant) returns a valid, well-formed SVG document with no clock groups, without throwing.",
+        "REQ-15: A timeZones list containing a duplicated timezone identifier renders that clock once per occurrence, each in its correct left-to-right position.",
+        "renderClocks uses no Date.now(), process.env, or file/network/console I/O.",
+        "New tests live under test/**/*.test.ts and do not modify any existing baseline test."
+      ],
+      "dependsOn": [
+        "worldclock-render-single"
+      ],
+      "completed": false
+    }
+  ],
   "retiredTasks": [],
-  "job": {
-    "id": "1-25",
-    "stage": "decompose",
-    "inputSha": "d14a05e508bcd6bcb05b9ffa58ec8748af93e94d",
-    "controlSha": "d14a05e508bcd6bcb05b9ffa58ec8748af93e94d",
-    "planHash": "8df09500fc57e7080783e4feee73956e807e1487a8b94aa6b37eae6e247a3126",
-    "taskId": null,
-    "feedback": "",
-    "attempt": 1,
-    "createdAt": "2026-09-11T14:43:15.235Z",
-    "dispatchedAt": "2026-09-11T14:43:16.581Z",
-    "runId": 34611813769
-  },
   "evidence": [],
   "processedEvents": [
     "comment:5623779192",
