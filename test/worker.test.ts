@@ -41,7 +41,9 @@ test('prepare entry point rejects untrusted workflow identity before creating co
       });
       assert.notEqual(result.status, 0);
       assert.match(result.stderr, /trusted workflow revision under the controller App identity/);
-      assert.doesNotMatch(result.stderr, /api\.github\.com/);
+      // Matched on the scheme, not the API host: a hostname literal here reads as an incomplete
+      // URL check to CodeQL, and ESM stack frames legitimately carry file:// paths.
+      assert.doesNotMatch(result.stderr, /https:\/\//);
       assert.equal(result.error, undefined);
     }
     assert.throws(() => readFileSync(join(directory, '.sdlc-context.json')), /ENOENT/);
