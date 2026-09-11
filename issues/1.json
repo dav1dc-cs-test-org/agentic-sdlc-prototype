@@ -42,6 +42,7 @@
     "taskId": null,
     "feedback": "Rebase onto the current default branch. Keep the approved scope unchanged: worldclock-time, worldclock-geometry, worldclock-render-single, worldclock-render-document. No Playwright, no new dependencies.",
     "attempt": 1,
-    "createdAt": "2026-09-11T14:10:56.060Z"
+    "createdAt": "2026-09-11T14:10:56.060Z",
+    "dispatchedAt": "2026-09-11T14:10:57.444Z"
   }
 }
