@@ -34,7 +34,8 @@
         "resolveLocalTime is pure: it takes the instant as an explicit parameter and performs no Date.now(), process.env, file, network, or console I/O."
       ],
       "dependsOn": [],
-      "completed": false
+      "completed": false,
+      "issueNumber": 6
     },
     {
       "id": "worldclock-geometry",
