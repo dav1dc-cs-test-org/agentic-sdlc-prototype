@@ -92,6 +92,17 @@
   ],
   "tasksLinked": true,
   "retiredTasks": [],
+  "job": {
+    "id": "1-29",
+    "stage": "code",
+    "inputSha": "5a77dc94972a8553a53f8bdc3a32070b3bcaaf34",
+    "controlSha": "d14a05e508bcd6bcb05b9ffa58ec8748af93e94d",
+    "planHash": "8df09500fc57e7080783e4feee73956e807e1487a8b94aa6b37eae6e247a3126",
+    "taskId": "worldclock-render-document",
+    "feedback": "",
+    "attempt": 1,
+    "createdAt": "2026-09-11T15:13:43.107Z"
+  },
   "evidence": [],
   "processedEvents": [
     "comment:5623779192",
@@ -106,7 +117,7 @@
     "comment:5635691746",
     "comment:5636167510"
   ],
-  "sequence": 28,
+  "sequence": 29,
   "repairs": 2,
   "failures": 0,
   "feedback": ""
