@@ -90,7 +90,8 @@
     "taskId": "turtle-engine",
     "feedback": "",
     "attempt": 1,
-    "createdAt": "2026-09-12T01:16:13.793Z"
+    "createdAt": "2026-09-12T01:16:13.793Z",
+    "dispatchedAt": "2026-09-12T01:16:14.820Z"
   },
   "evidence": [],
   "processedEvents": [
