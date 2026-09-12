@@ -20,7 +20,7 @@
   "processedEvents": [
     "comment:5642435724"
   ],
-  "sequence": 1,
+  "sequence": 2,
   "repairs": 0,
   "failures": 0,
   "spend": {
@@ -37,5 +37,16 @@
     "commentId": 5642435724,
     "planHash": "8ff368d6f83c3b18548b7127d79542532a6d306137c753d59f733fda8d24387f",
     "at": "2026-09-12T01:10:04Z"
+  },
+  "job": {
+    "id": "19-2",
+    "stage": "decompose",
+    "inputSha": "39ee481bbf98674bf6779fe7a93df57e62255f1c",
+    "controlSha": "39ee481bbf98674bf6779fe7a93df57e62255f1c",
+    "planHash": "8ff368d6f83c3b18548b7127d79542532a6d306137c753d59f733fda8d24387f",
+    "taskId": null,
+    "feedback": "",
+    "attempt": 1,
+    "createdAt": "2026-09-12T01:10:21.446Z"
   }
 }
