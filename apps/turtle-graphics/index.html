@@ -70,7 +70,11 @@
 
   #controls {
     display: grid;
-    grid-template-columns: repeat(2, minmax(120px, 1fr));
+    /* auto-fit + a shrinkable minmax floor lets columns collapse to a
+       single column at very narrow effective widths (e.g. 200% browser
+       zoom on a small viewport) instead of forcing an overflow-causing
+       fixed column count. */
+    grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr));
     gap: 0.6rem;
     width: 100%;
     max-width: 420px;
@@ -96,12 +100,6 @@
   button:focus-visible {
     outline: 3px solid var(--focus-ring);
     outline-offset: 2px;
-  }
-
-  @media (min-width: 480px) {
-    #controls {
-      grid-template-columns: repeat(3, minmax(100px, 1fr));
-    }
   }
 </style>
 </head>
