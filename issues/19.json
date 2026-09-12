@@ -92,7 +92,8 @@
     "feedback": "Required checks failed or did not run: codeql. Inspect https://github.com/dav1dc-cs-test-org/agentic-sdlc-prototype/actions/runs/34666983157.",
     "attempt": 1,
     "createdAt": "2026-09-12T02:13:40.330Z",
-    "dispatchedAt": "2026-09-12T02:13:41.464Z"
+    "dispatchedAt": "2026-09-12T02:13:41.464Z",
+    "runId": 34667071711
   },
   "evidence": [],
   "processedEvents": [
