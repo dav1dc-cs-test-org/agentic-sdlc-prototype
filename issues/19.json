@@ -91,7 +91,8 @@
     "taskId": "turtle-ui",
     "feedback": "",
     "attempt": 1,
-    "createdAt": "2026-09-12T01:23:29.448Z"
+    "createdAt": "2026-09-12T01:23:29.448Z",
+    "dispatchedAt": "2026-09-12T01:23:30.526Z"
   },
   "evidence": [],
   "processedEvents": [
