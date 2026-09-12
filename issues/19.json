@@ -38,8 +38,8 @@
         "npm run verify (tsc --noEmit plus Node test run with coverage) passes including the new engine and its tests, meeting the 80% line / 70% branch coverage thresholds with no drop"
       ],
       "dependsOn": [],
-      "completed": false,
-      "issueNumber": 20
+      "issueNumber": 20,
+      "completed": false
     },
     {
       "id": "turtle-ui",
@@ -59,8 +59,8 @@
       "dependsOn": [
         "turtle-engine"
       ],
-      "completed": false,
-      "issueNumber": 21
+      "issueNumber": 21,
+      "completed": false
     },
     {
       "id": "turtle-styling",
@@ -76,10 +76,11 @@
       "dependsOn": [
         "turtle-ui"
       ],
-      "completed": false,
-      "issueNumber": 22
+      "issueNumber": 22,
+      "completed": false
     }
   ],
+  "tasksLinked": true,
   "retiredTasks": [],
   "job": {
     "id": "19-3",
@@ -91,7 +92,8 @@
     "feedback": "",
     "attempt": 1,
     "createdAt": "2026-09-12T01:16:13.793Z",
-    "dispatchedAt": "2026-09-12T01:16:14.820Z"
+    "dispatchedAt": "2026-09-12T01:16:14.820Z",
+    "runId": 34664319966
   },
   "evidence": [],
   "processedEvents": [
@@ -108,6 +110,5 @@
     "preempted": 0,
     "historyComplete": true
   },
-  "feedback": "",
-  "tasksLinked": true
+  "feedback": ""
 }
