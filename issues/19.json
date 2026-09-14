@@ -93,7 +93,8 @@
     "taskId": "browser-ui",
     "feedback": "",
     "attempt": 1,
-    "createdAt": "2026-09-14T17:43:18.584Z"
+    "createdAt": "2026-09-14T17:43:18.584Z",
+    "dispatchedAt": "2026-09-14T17:43:19.809Z"
   },
   "evidence": [],
   "processedEvents": [
