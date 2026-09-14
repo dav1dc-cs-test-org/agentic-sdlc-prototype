@@ -42,6 +42,7 @@
     "taskId": null,
     "feedback": "Keep the turtle-graphics scope. Use v1 as reference and fix the UI test's CodeQL finding by validating extracted URLs exactly, without weakening checks.",
     "attempt": 1,
-    "createdAt": "2026-09-14T15:56:28.139Z"
+    "createdAt": "2026-09-14T15:56:28.139Z",
+    "dispatchedAt": "2026-09-14T15:56:29.888Z"
   }
 }
