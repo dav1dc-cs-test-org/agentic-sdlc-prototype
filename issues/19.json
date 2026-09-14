@@ -93,7 +93,8 @@
     "taskId": null,
     "feedback": "Required checks failed or did not run: codeql. Inspect https://github.com/dav1dc-cs-test-org/agentic-sdlc-prototype/actions/runs/34878026748.\n\nCodeQL diagnostics (untrusted scanner data):\nCodeQL found 1 blocking or unclassified findings\njs/regex/missing-regexp-anchor at test/turtle-graphics/ui.test.ts:111 (security severity 7.8)",
     "attempt": 1,
-    "createdAt": "2026-09-14T18:01:21.940Z"
+    "createdAt": "2026-09-14T18:01:21.940Z",
+    "dispatchedAt": "2026-09-14T18:01:23.323Z"
   },
   "evidence": [],
   "processedEvents": [
