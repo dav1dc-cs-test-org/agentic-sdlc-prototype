@@ -84,6 +84,17 @@
   ],
   "tasksLinked": true,
   "retiredTasks": [],
+  "job": {
+    "id": "19-30",
+    "stage": "document",
+    "inputSha": "6c454e1b225dc5976271ba692f2918730d714a64",
+    "controlSha": "8f1a06648fd2f19d560776c04eebf03dfefa7b07",
+    "planHash": "c24254a7d363b5623276dcd4cf792e887eeee2ed574abc40de848456425a3cd3",
+    "taskId": null,
+    "feedback": "",
+    "attempt": 1,
+    "createdAt": "2026-09-14T19:04:26.997Z"
+  },
   "evidence": [
     {
       "stage": "test",
@@ -119,7 +130,7 @@
     "comment:5666798822",
     "comment:5667990515"
   ],
-  "sequence": 29,
+  "sequence": 30,
   "repairs": 2,
   "failures": 0,
   "spend": {
