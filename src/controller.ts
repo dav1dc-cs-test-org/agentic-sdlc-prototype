@@ -1,5 +1,5 @@
 import { approvePlan, makePlan, parseCommand, type Phase } from './domain.ts';
-import { reportSchema, type Change, type Intake, type Policy, type Report } from './contracts.ts';
+import { reportSchema, type Change, type Cost, type Intake, type Policy, type Report } from './contracts.ts';
 import { validateChanges } from './changes.ts';
 import {
   assertCurrentResult, assertPublishable, createLifecycle, nextTask, recordChange, recordSpend,
@@ -37,7 +37,7 @@ export interface Platform {
   findRun(job: Job): Promise<Run | undefined>;
   cancelRun(runId: number): Promise<void>;
   report(run: Run, job: Job): Promise<Report>;
-  cost(run: Run): Promise<{ runnerMs: number; credits: number; preempted: boolean }>;
+  cost(run: Run, job: Job): Promise<Cost & { runnerMs: number }>;
   applyChanges(state: Lifecycle, job: Job, changes: Change[]): Promise<string>;
   publish(state: Lifecycle): Promise<number>;
   pullRequest(number: number): Promise<'open' | 'closed' | 'merged'>;
@@ -310,15 +310,21 @@ export class Controller {
       }
       return;
     }
+    const failed = run.conclusion !== 'success' &&
+      !(run.conclusion === 'failure' && ['scan', 'validate'].includes(job.stage));
     // Every completed run is charged, accepted or not: a rejected result still consumed the budget.
     if (job.costedRun !== run.id) {
-      recordSpend(state, await this.platform.cost(run), this.policy.maxJobCredits);
+      const cost = await this.platform.cost(run, job);
+      if (failed || cost.preempted === true || cost.credits === null || cost.preempted === null) {
+        await this.attemptDiagnostics(state, job, run, cost, failed);
+      }
+      recordSpend(state, cost, this.policy.maxJobCredits);
       job.costedRun = run.id;
       await this.platform.save(record);
     }
-    if (run.conclusion !== 'success' &&
-      !(run.conclusion === 'failure' && ['scan', 'validate'].includes(job.stage))) {
-      return this.failed(record, `Worker ${run.conclusion ?? 'failed'}: ${run.url}`);
+    if (failed) {
+      return this.failed(record, `Worker ${run.conclusion ?? 'failed'}: ${run.url}. ` +
+        `The ${job.stage} stage is incomplete; see the attempt diagnostics.`);
     }
     let report: Report;
     try {
@@ -391,6 +397,32 @@ export class Controller {
     await this.platform.comment(state.issueNumber, `job:${job.id}`, `### ${job.stage}\n\n${report.summary}\n\n[Workflow evidence](${run.url})`);
   }
 
+  private async attemptDiagnostics(state: Lifecycle, job: Job, run: Run, cost: Cost & { runnerMs: number }, failed: boolean): Promise<void> {
+    let checkpoint = '';
+    if (job.stage === 'security' && failed) {
+      try {
+        const report = reportSchema.parse(await this.platform.report(run, job));
+        assertCurrentResult(state, report.jobId, report.inputSha, run.id);
+        validateChanges(report.changes, job.stage, this.policy);
+        checkpoint = `\n\nLast Security checkpoint/result (untrusted diagnostic only, not accepted evidence):\n\n${report.summary.slice(0, 6000)}`;
+      } catch {
+        checkpoint = '\n\nNo valid current-job Security checkpoint was available. Review completeness is unknown.';
+      }
+    }
+    const credits = cost.credits === null ? 'unavailable' : `${cost.credits.toFixed(1)} AI credits`;
+    const cap = cost.creditLimit === undefined ? `${this.policy.maxJobCredits} (current configuration fallback)` : String(cost.creditLimit);
+    const preemption = cost.preempted === null ? 'unknown (signal unavailable)' :
+      cost.preempted ? 'reported by the workflow' : 'not reported (does not establish completeness)';
+    await this.platform.comment(state.issueNumber, `attempt:${job.id}:${run.id}`,
+      `### Worker attempt diagnostics\n\nStage: **${job.stage}**. Job: \`${job.id}\`. [Run ${run.id}](${run.url}).\n\n` +
+      `Source: \`${job.inputSha}\`. Trusted revision: \`${job.controlSha}\`. Plan: \`${job.planHash ?? 'not yet approved'}\`.\n\n` +
+      `Workflow conclusion: ${run.conclusion ?? 'unknown'}. Measured usage: ${credits}. ` +
+      `Credit limit: ${cap}. Runner time: ${(cost.runnerMs / 60_000).toFixed(1)} minutes.\n\n` +
+      `Pre-emption: ${preemption}. ` +
+      (failed ? 'This attempt did not complete the stage and cannot supply passing evidence.' :
+        'Telemetry warning: inspect the run and remaining work. Telemetry alone does not prove review completion.') + checkpoint);
+  }
+
   private async failed(record: RecordState, message: string): Promise<void> {
     const state = record.state;
     state.failures += 1;
@@ -420,8 +452,8 @@ export class Controller {
     const { runs, runnerMs, credits, nearLimit, preempted } = state.spend;
     const label = state.spend.historyComplete ? 'Cost' : 'Recorded cost (earlier costs unavailable)';
     return `${label}: ${(runnerMs / 60_000).toFixed(1)} runner minutes, ${credits.toFixed(1)} AI credits ` +
-      `over ${runs} run${runs === 1 ? '' : 's'}. Near the ${this.policy.maxJobCredits}-credit job limit: ` +
-      `${nearLimit}. Pre-empted by it: ${preempted}.`;
+      `over ${runs} run${runs === 1 ? '' : 's'}. Near-limit runs: ${nearLimit}. Pre-empted: ${preempted}. ` +
+      `Current per-job limit: ${this.policy.maxJobCredits} AI credits.`;
   }
 
   private async status(state: Lifecycle): Promise<void> {

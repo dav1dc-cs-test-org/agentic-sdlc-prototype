@@ -42,6 +42,7 @@ flowchart TD
         ArchController["Deterministic controller on Actions"]
     end
     subgraph ArchExecution["Separate hosted worker jobs"]
+      ArchBudget["Validate and snapshot repository AI credit limit"]
         ArchAgent["Fresh Copilot role worker in sdlc-agent"]
         ArchChecks["Deterministic scanner and test workflows"]
         ArchInference["Copilot inference service"]
@@ -59,7 +60,8 @@ flowchart TD
     ArchApp -.->|"Repository-scoped write authority"| ArchController
     ArchController -->|"Read and checkpoint"| ArchState
     ArchController -->|"Create and link tasks"| ArchTasks
-    ArchController -->|"Explicit workflow dispatch"| ArchAgent
+    ArchController -->|"Explicit agent workflow dispatch"| ArchBudget
+    ArchBudget -->|"Validated per-inference-job cap"| ArchAgent
     ArchController -->|"Explicit workflow dispatch"| ArchChecks
     ArchAgent -->|"Inference requests"| ArchInference
     ArchContext -.->|"Untrusted input"| ArchAgent
@@ -107,6 +109,17 @@ separate Actions jobs, not additional Copilot agents.
 The labels `researching`, `awaiting_approval`, and so on are persisted lifecycle
 phases. Transitions below assume the worker result has passed the acceptance
 checks described in [Worker Handoff](#worker-handoff).
+
+The [Research profile](../.github/agents/research.agent.md) requires a Technology
+and Architecture Decision in proposed plans. It separates the application's
+baseline from controller tooling, compares product-fit options, recommends
+components and data flow, and independently assesses pipeline support and
+maintainer prerequisites. Unsupported implementation or validation requires a
+`blocked` report with actionable details in `summary`, using the existing
+blocked-result path rather than creating an executable plan with unapproved
+prerequisites. These are agent instructions, not new schema-enforced plan fields;
+human plan review and deterministic path, revision, and validation gates remain
+necessary. The pipeline still targets Node.js/TypeScript.
 
 <!-- mermaid-checked: safe quoted labels, unique IDs, closed subgraphs -->
 ```mermaid
@@ -286,6 +299,7 @@ sequenceDiagram
   participant HwWorker as "Registered worker"
   participant HwArtifacts as "Actions artifacts"
   participant HwBranch as "Feature branch"
+  participant HwIssue as "Epic issue"
 
   HwControl->>HwState: Read lifecycle and state-file SHA
   HwState-->>HwControl: Persisted lifecycle
@@ -298,35 +312,51 @@ sequenceDiagram
   HwState-->>HwControl: Updated state-file version
   HwControl->>HwState: Persist dispatch timestamp
   HwControl->>HwActions: workflow_dispatch on trusted default branch
+    opt Agent workflow
+    HwActions->>HwActions: Validate and snapshot SDLC_AIC_CREDIT_LIMIT after activation
+    end
   HwActions-)HwWorker: Start expected workflow revision
   HwWorker->>HwState: Read registered lifecycle using read-only access
   HwState-->>HwWorker: Job, approved plan, tasks, and prior evidence
   HwWorker->>HwWorker: Validate and migrate state in memory only
   HwWorker->>HwWorker: Check registered inputs and runnable state
+    opt Security review
+    HwWorker->>HwWorker: Seed blocked checkpoint and refresh it as review progresses
+    end
   HwWorker->>HwWorker: Execute assigned role or deterministic checks
   HwWorker->>HwArtifacts: Upload sdlc-result and supporting evidence
   HwWorker-->>HwActions: Workflow concludes
-  HwActions->>HwArtifacts: Upload workflow-measured sdlc-cost
+  HwActions->>HwArtifacts: Upload workflow-measured sdlc-cost with applied credit limit
   HwActions-)HwControl: workflow_run completion event
   HwControl->>HwActions: Discover expected workflow, actor, revision, and run
   HwActions-->>HwControl: Matching first-attempt run metadata
   HwControl->>HwState: Bind run ID to active job
   HwControl->>HwArtifacts: Read job durations and sdlc-cost
-  HwControl->>HwState: Charge the run once, accepted or not
-  HwControl->>HwArtifacts: Download exactly one eligible result artifact
-  HwArtifacts-->>HwControl: Untrusted result JSON
-  HwControl->>HwControl: Check schema, current job, plan, source, and policy
-    alt Accepted pass result
-        opt Coding, testing, or documentation stage proposes text changes
-      HwControl->>HwBranch: Validate tree and publish without force
-      HwBranch-->>HwControl: Accepted commit SHA
-      HwControl->>HwControl: Invalidate older evidence
+    opt Failed workflow or unavailable or pre-empted telemetry
+        opt Failed Security workflow
+      HwControl->>HwArtifacts: Read and validate checkpoint for diagnostics only
         end
-    HwControl->>HwState: Record stage result and next phase
-    else Accepted changes_requested result
-    HwControl->>HwState: Store findings and bounded repair transition
-    else Blocked result or invalid output
-    HwControl->>HwState: Block explicitly or count an infrastructure failure
+    HwControl->>HwIssue: Publish idempotent attempt diagnostics
+    end
+  HwControl->>HwState: Charge the run once, accepted or not
+    alt Workflow permits result acceptance
+    HwControl->>HwArtifacts: Download exactly one eligible result artifact
+    HwArtifacts-->>HwControl: Untrusted result JSON
+    HwControl->>HwControl: Check schema, current job, plan, source, and policy
+        alt Accepted pass result
+            opt Coding, testing, or documentation stage proposes text changes
+        HwControl->>HwBranch: Validate tree and publish without force
+        HwBranch-->>HwControl: Accepted commit SHA
+        HwControl->>HwControl: Invalidate older evidence
+            end
+        HwControl->>HwState: Record stage result and next phase
+        else Accepted changes_requested result
+        HwControl->>HwState: Store findings and bounded repair transition
+        else Blocked result or invalid output
+        HwControl->>HwState: Block explicitly or count an infrastructure failure
+        end
+    else Failed worker workflow
+    HwControl->>HwState: Count failure without accepting checkpoint evidence
     end
 ```
 
@@ -340,6 +370,14 @@ The adapter selects the expected worker file from the registered stage:
 All seven agent stages select the inference model at workflow runtime from the
 repository variable `SDLC_MODEL`, falling back to `auto` when it is unset or
 empty. The model choice does not change worker permissions or result acceptance.
+
+The credential-free `budget` job validates `SDLC_AIC_CREDIT_LIMIT` after
+activation, defaulting to `250` when unset or empty. It accepts decimal integers
+from 1 to 10,000. Its output is passed to both inference jobs through
+`engine.env.GH_AW_MAX_AI_CREDITS` and to the worker's runtime policy. The
+primary agent and threat detector enforce the same configured cap separately;
+their combined usage is not bounded by a single shared counter. Invalid
+configuration prevents either inference job from starting.
 
 Acceptance requires the controller App as the run actor, the registered trusted
 workflow commit, the expected job name and workflow, and `run_attempt == 1`.
@@ -438,6 +476,30 @@ available evidence. They are advisory assessments with limited tool access,
 not proof that a feature is free of defects. Native GitHub rules and human
 review remain necessary at the PR boundary.
 
+The [Testing profile](../.github/agents/test.agent.md) first derives a risk-based
+coverage map from approved behavior and public contracts, with independently
+justified expected results. Missing test details may be filled in; undefined
+product rules require clarification. Reports distinguish tested behavior,
+demonstrated defects, unavailable tooling, and unfinished or approved later human
+checks. Production defects return `changes_requested` with a reproduction in
+the summary because that path does not apply proposed test changes. Ambiguity
+or incomplete required testing returns `blocked`. The existing `pass` path
+still leads to independent scans and deterministic validation as shown above.
+These are prompt-level completeness rules, not new schema-enforced fields or
+browser-validation capabilities. Test-only scope and baseline immutability at
+`state.baseSha` are unchanged.
+
+The Security profile requires explicit coverage, findings, outstanding checks,
+and a handoff. It prioritizes high-risk paths without silently dropping other
+applicable review areas. Trusted preparation seeds a provisional `blocked`
+result after checking the registered job; the agent refreshes it through the
+normal collect command as work progresses. The final post-step attempts to
+upload the last packaged result even if inference fails. This is best-effort
+capture, not continuous remote storage; abrupt runner termination can lose it.
+Checkpoints from failed workflows are only diagnostic and cannot create
+Security evidence. A successful workflow returning `blocked` follows the normal
+blocked-result path. There is no new schema-level proof of review completeness.
+
 ## Recovery Flow
 
 The controller records state before dispatching work or invalidating a job.
@@ -516,6 +578,12 @@ flowchart TD
 - **State races:** updates include the prior state-file SHA. Conflicting writes
   fail instead of silently overwriting another checkpoint. A future controller
   run reloads state; GitHub API calls and state writes are not one transaction.
+- **Attempt diagnostics:** failed workflows and telemetry warnings produce a
+  comment keyed by job and run before their cost is checkpointed. A failed
+  Security result is validated for identity and read-only changes before its
+  bounded summary is displayed as untrusted progress. Neither that summary nor
+  its claimed outcome is used to accept failed work. Comment retries are
+  idempotent, and a failed comment write leaves the cost unrecorded for retry.
 
 The schedule reconciles every 10 minutes and can recover established lifecycles
 after events are coalesced by Actions concurrency. Initial lifecycle creation
@@ -552,6 +620,7 @@ flowchart LR
     end
     ComponentMain -->|"Select issues and reconcile"| ComponentController
     ComponentMain -->|"Construct Platform adapter"| ComponentGitHub
+    ComponentMain -->|"Resolve and validate runtime policy"| ComponentContracts
     ComponentController -->|"Commands and plan approval"| ComponentDomain
     ComponentController -->|"Jobs and publication prerequisites"| ComponentLifecycle
     ComponentController -->|"Platform operations"| ComponentGitHub
@@ -561,7 +630,7 @@ flowchart LR
     ComponentGitHub -->|"Validate writes and compare trusted paths"| ComponentChanges
     ComponentWorker -->|"Read registered lifecycle"| ComponentGitHub
     ComponentWorker -->|"Check approval integrity"| ComponentLifecycle
-    ComponentWorker -->|"Validate job inputs and reports"| ComponentContracts
+    ComponentWorker -->|"Validate runtime policy, job inputs and reports"| ComponentContracts
     ComponentWorker -->|"Collect bounded text changes"| ComponentChanges
     ComponentValidate -->|"Read trusted policy"| ComponentContracts
 ```
@@ -631,7 +700,7 @@ Deploy only after older controller and worker runs are idle, following
 | `job.inputSha` | Source commit supplied to a particular worker |
 | `job.runId` | Accepted GitHub run for the registered job |
 | `spend` | Cumulative recorded runner time and AI credits |
-| `spend.historyComplete` | `false` when costs predating the recorded tally are unavailable |
+| `spend.historyComplete` | `false` when historical or subsequently collected inference usage is unavailable |
 
 At initialization, approval, and replanning, baseline and controller SHAs are
 captured from the default branch. `baseSha` then remains fixed while the
@@ -700,6 +769,33 @@ authentication error. Inspect the archived proxy usage and error records when a
 worker returns HTTP 403 after successful inference near the cap; neither that
 status code nor the credit total alone establishes the cause.
 
+The runtime policy resolves `maxJobCredits` from `SDLC_AIC_CREDIT_LIMIT`, with
+the checked-in policy providing the default of `250`. New cost artifacts also
+include the `creditLimit` captured by the workflow's budget job. A run is
+classified as near-limit at 80% of its recorded cap, unless it was pre-empted.
+If an older artifact lacks this field, the controller falls back to its current
+resolved limit. Changing the repository variable does not retroactively change
+stored counters, and status separates near-limit counts from the current cap.
+The artifact format remains backward-compatible; no lifecycle migration is
+required. The custom cost artifact still measures primary-agent inference only.
+
+Cost receipts represent unavailable usage and stop signals with `null` rather
+than numeric zero or boolean false. Missing, expired, duplicate, or oversized
+agent receipts produce unknown telemetry; malformed receipt content is still
+rejected. Deterministic scan and validation jobs have known zero inference
+usage. Unknown credits leave known totals intact and set `historyComplete`
+false. Only measured credits with `preempted: false` contribute to the near-limit
+counter, and only `true` contributes to the pre-emption counter.
+
+For a failed workflow or unknown/pre-empted telemetry, the controller publishes
+per-attempt diagnostics with the registered stage, job, commits, plan, run link,
+cap, measured duration, and available usage/stop signals. Failed Security
+checkpoints are displayed only after normal result-identity and change-policy
+validation and are never accepted as evidence. Telemetry remains observational:
+a successful run with a valid `pass` is not rejected solely for pre-emption.
+A controlled, authorized live signal test is required before introducing such
+a gate; being near the cap alone must not invalidate a completed review.
+
 ### Retention and Limits
 
 | Control | Current value |
@@ -711,14 +807,15 @@ status code nor the credit total alone establishes the cause.
 | Total registered jobs per lifecycle | 40 |
 | Changed files per proposal | 30 |
 | Total proposed text bytes | 512,000 |
-| AI credits per agent run | 200 |
+| AI credits per inference job | `SDLC_AIC_CREDIT_LIMIT`, default 250 |
 | Agent execution timeout | 30 minutes |
 | Agent job timeout | 45 minutes |
 | Controller timeout | 15 minutes |
-| Agent inference cap | 200 AI credits per run |
+| Agent and threat-detection caps | Configured limit applied separately to each job |
 | Worker evidence artifact retention | 14 days requested |
 
-Limits come from [policy](../.github/sdlc/policy.json) and the workflow sources.
+Limits come from [policy](../.github/sdlc/policy.json), the workflow sources,
+and the validated `SDLC_AIC_CREDIT_LIMIT` repository-variable override.
 State history and issue/PR summaries retain evidence links, not perpetual copies
 of expired artifacts. Actions minutes and aggregate inference usage need
 separate billing controls.

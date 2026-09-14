@@ -20,6 +20,16 @@ The built-in test harness targets Node.js/TypeScript, an npm lockfile, a
 TypeScript configuration, and Node's test runner. Supporting a different stack
 requires a reviewed validator and policy change before enabling agents.
 
+The [Research agent](../.github/agents/research.agent.md) evaluates product-fit
+technology separately from pipeline compatibility. Its plan must compare
+credible approaches and state whether the recommendation is `supported`,
+`requires maintainer changes`, or `unknown`. If implementation or required
+validation is unsupported, its blocked summary lists the recommendation,
+specific gaps, and decisions needed. Plan approval alone cannot authorize
+protected-path edits or weaker gates. Maintainers must separately approve and
+land prerequisite tooling or policy changes, then obtain a supported research
+plan and fresh approval under the normal trusted-revision rules.
+
 ## 1. Create a Controller App
 
 Create a GitHub App with webhooks disabled and install it only on this
@@ -50,6 +60,7 @@ Create repository variables:
 | `SDLC_APP_SLUG` | App slug, without the `[bot]` suffix |
 | `SDLC_ENABLED` | `false` until all setup and checks are complete |
 | `SDLC_MODEL` | Optional Copilot inference model ID; defaults to `auto` when unset or empty |
+| `SDLC_AIC_CREDIT_LIMIT` | Optional per-inference-job AI credit cap, a whole number from 1 to 10,000; defaults to `250` when unset or empty |
 
 The App slug is used to authenticate worker runs. It must match the App that
 mints the controller token; it is not the App's human-readable display name.
@@ -63,6 +74,46 @@ Variables** with a model identifier supported by the Copilot runtime and enabled
 for your organization. It applies to all seven SDLC agent stages and gh-aw's
 threat-detection pass. Changes apply to subsequent workflow runs without editing
 or recompiling workflows; remove the variable or leave it empty to restore `auto`.
+
+### AI Credit Limit
+
+Create `SDLC_AIC_CREDIT_LIMIT` in the same repository **Variables** tab, not as
+a secret. For example, `500` permits each inference job to consume up to that
+configured budget. Delete the variable or leave it empty to restore `250`.
+Use plain decimal digits with no leading zeros or surrounding whitespace.
+Zero, negative values, fractions, non-numeric values, and values above 10,000
+are rejected before inference rather than disabling the limit.
+
+The agent workflow's credential-free `budget` job validates and captures the
+value after the normal activation gates. Both the primary agent and the
+threat-detection job use that captured value, with a separate budget for each
+job. This is not a combined workflow or lifecycle spending cap. Actions minutes
+and organization billing limits are separate. Once this workflow update is
+deployed, changing the variable requires no source changes or recompilation.
+
+The worker context and controller status use the resolved limit. New
+`sdlc-cost` receipts also record the primary agent's `creditLimit`, so near-limit
+classification uses the cap that applied to that run even if the repository
+variable changes before reconciliation. Older receipts without `creditLimit`
+remain readable and use the controller's resolved limit as a fallback. Already
+recorded totals are not recalculated. The existing receipt measures primary-agent
+inference; threat-detection usage remains in gh-aw's separate diagnostics.
+
+Missing or malformed usage/stop-signal outputs are recorded as `null`, separately
+from a measured zero or explicit `false`. Missing, expired, duplicate, or oversized
+agent cost artifacts also mean unavailable telemetry. Malformed artifact content
+still fails validation. Deterministic `scan` and `validate` jobs have known zero
+inference usage. Unavailable credit usage marks the existing cost history as
+incomplete; recorded runner time and known credits are retained. Near-limit
+classification requires measured usage and an explicit non-pre-emption signal.
+
+The pinned gh-aw v0.88.7 compiler only supports literals in `max-ai-credits`.
+This workflow instead uses its supported `engine.env.GH_AW_MAX_AI_CREDITS`
+override. Do not add a literal cap or edit the generated workflow manually.
+The compiler's generic failure handler still carries its own `1000`-credit
+default; it is not the effective inference limit. Use the explicit
+"Per-inference-job credit limit" step summary, the receipt's `creditLimit`,
+and the archived firewall configuration when investigating budget errors.
 
 ## 2. Configure Environments
 
@@ -104,7 +155,7 @@ Copilot policies permit it before enabling the controller.
 
 If inference fails with `403`, inspect the `agent` artifact and its proxy usage
 before changing credentials. The status alone does not establish missing
-Copilot access, especially after successful requests near the 200-credit cap.
+Copilot access, especially after successful requests near the configured credit cap.
 See [Blocked Scan Repairs](#blocked-scan-repairs). If diagnostics confirm that
 organization inference access is unavailable, a fallback is to set
 `permissions.copilot-requests` to `none`,
@@ -333,6 +384,97 @@ source and existing baseline tests are protected.
 Also test pausing an in-flight job and a deliberately failing test on a disposable
 pilot. Do not treat local mocks as evidence that live credentials, billing,
 network policies, CodeQL licensing, or Copilot behavior work in your organization.
+
+## Test Design and Coverage
+
+The [Testing agent](../.github/agents/test.agent.md) derives a starting test plan
+from the approved behavior, request, and established public contracts. Sparse
+test instructions alone are not a blocker. Its summary maps criteria to inputs,
+actions, independently justified expectations, risk, tests, and execution status.
+Relevant positive, negative, boundary, repeated-operation, state-transition,
+failure-recovery, and regression cases fill gaps without inventing product rules.
+
+An undefined expected outcome requires a precise question, ideally resolved in
+Research before implementation. Testing returns `blocked` for such ambiguity,
+unavailable required validation, or unfinished testing. A demonstrated production
+defect returns `changes_requested` with the reproduction and failing command in
+the summary: that outcome does not publish proposed test changes. The subsequent
+attempt must re-establish the tests at its registered commit, not assume an
+unaccepted test patch was preserved on the branch.
+
+Only permitted test paths may change, and tests present at `state.baseSha` remain
+immutable. The agent runs new or changed tests and relevant regressions, reports
+actual exit codes and counts, and distinguishes its results from the controller's
+later full-suite and coverage checks. Browser rendering, touch behavior, and
+visual accessibility remain unverified by Node or DOM-mock tests. Later human
+checks explicitly assigned by the approved plan stay pending; they cannot
+silently replace required automated validation.
+
+This is guidance for test design and honest reporting. The report schema does
+not independently prove the coverage map is complete. Test-only permissions,
+immutable baseline tests, deterministic validation, and coverage gates remain
+unchanged.
+
+## Incomplete Security Reviews
+
+The [Security profile](../.github/agents/security.agent.md) reviews the full
+integrated diff, prioritizing scanner diagnostics and changed trust boundaries.
+It must list reviewed, not-applicable, and pending areas, distinguish confirmed
+defects from suspicions, identify protected-path blockers, and record the exact
+remaining work. It must not return `pass` while required review is unfinished.
+Those completeness instructions guide the model; they are not a semantic
+validator of its claims.
+
+After validating a registered Security job, trusted preparation seeds
+`.sdlc-output/result.json` with an initial `blocked` result stating that review
+has not started. The agent updates its provisional report and runs the existing
+collect command after meaningful progress. Checkpoints stay `blocked` until a
+final outcome is justified. The fixed `always()` upload step attempts to retain
+the last packaged result even when inference fails. Checkpoints are local until
+that upload succeeds; runner termination can still prevent capture entirely.
+
+When collecting a failed worker workflow, the controller posts a stable
+**Worker attempt diagnostics** comment before recording its cost. It includes
+the registered stage, job, source and trusted revision, plan hash, run link,
+measured or unavailable usage, applied cap (or labeled fallback), and reported
+or unknown pre-emption signal. For failed Security runs, it also includes up to
+6000 characters of the last available checkpoint/result, after validating the
+job, commit, plan, and read-only change policy. Missing or invalid checkpoints
+are labeled unavailable, never treated as completed work. A failed run cannot
+provide passing evidence even if its uploaded report claims `pass`.
+
+Successful worker workflows with unavailable telemetry or reported pre-emption
+also receive diagnostic warnings. Diagnostic comments are idempotent by job and
+run, separate from accepted evidence, and remain visible after a retry starts.
+Comment retries cannot double-charge the run. Failed-stage retry budgets,
+human commands, and current-commit acceptance checks remain unchanged. An
+explicit `blocked` checkpoint from a successful workflow blocks the lifecycle.
+
+For an interrupted review:
+
+1. Read the attempt comment and linked `sdlc-result`, `sdlc-cost`, and `agent`
+  artifacts. Distinguish missing progress from an actual list of finished
+  checks. The checkpoint excerpt is untrusted context, not proof or authority.
+2. Compare the captured cap with measured usage and proxy errors. The model
+  cannot infer remaining credits from the configured limit, and neither
+  proximity to the cap nor HTTP 403 alone proves exhaustion.
+3. Resolve the cause before a manual retry. A replacement Security job must
+  revalidate previous observations at its registered commit. Protected-path
+  findings require maintainer changes, not a waiver or a blind repair loop.
+
+Automatic rejection based solely on `preempted` remains deferred. A successful
+workflow with a valid `pass` report can still advance despite a telemetry
+warning. Before adding that gate, conduct a separately authorized experiment
+on a disposable lifecycle: compare a deliberately constrained run with a normal
+run, inspect actual proxy-stop evidence, verify `true` versus `false`/unknown
+outputs, and confirm incomplete reviews cannot publish. Do not lower a shared
+repository cap while unrelated work is active. No such live experiment is run
+by the local test suite.
+
+Deploy the controller and generated workflow together after draining older
+runs. Older code may reject the new nullable cost fields. Existing numeric
+receipts remain readable and persisted lifecycle state stays at version 2;
+this change adds no new required state fields or permissions.
 
 ## State Upgrades
 

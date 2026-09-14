@@ -299,6 +299,7 @@ test('completed runs remain retryable while their result artifact is not yet vis
 });
 
 test('cost sums job durations and reads the workflow-written budget outcome', async () => {
+  const { job } = active();
   const listJobs = () => undefined;
   const listArtifacts = () => undefined;
   const jobs = [
@@ -318,11 +319,17 @@ test('cost sums job durations and reads the workflow-written budget outcome', as
   const archive = zipSync({ 'cost.json': strToU8('{"credits":50.8,"preempted":true}') });
 
   // 44s plus 227s; the unstarted and negative-duration jobs contribute nothing.
-  assert.deepEqual(await build([{ id: 9, name: 'sdlc-cost', expired: false, size_in_bytes: 90 }], archive).cost(run),
+  assert.deepEqual(await build([{ id: 9, name: 'sdlc-cost', expired: false, size_in_bytes: 90 }], archive).cost(run, job),
     { runnerMs: 271_000, credits: 50.8, preempted: true });
+  const configured = zipSync({ 'cost.json': strToU8('{"credits":50.8,"preempted":true,"creditLimit":500}') });
+  assert.deepEqual(await build([{ id: 9, name: 'sdlc-cost', expired: false, size_in_bytes: 120 }], configured).cost(run, job),
+    { runnerMs: 271_000, credits: 50.8, preempted: true, creditLimit: 500 });
   for (const artifacts of [[], [{ id: 9, name: 'sdlc-cost', expired: true, size_in_bytes: 90 }],
     [{ id: 9, name: 'sdlc-cost', expired: false, size_in_bytes: 20_000 }]]) {
-    assert.deepEqual(await build(artifacts, archive).cost(run), { runnerMs: 271_000, credits: 0, preempted: false });
+    assert.deepEqual(await build(artifacts, archive).cost(run, job), { runnerMs: 271_000, credits: null, preempted: null });
+  }
+  for (const stage of ['scan', 'validate'] as const) {
+    assert.deepEqual(await build([], archive).cost(run, { ...job, stage }), { runnerMs: 271_000, credits: 0, preempted: false });
   }
   assert.throws(() => decodeCostArchive(zipSync({ 'other.json': strToU8('{}') })), /Missing/);
   assert.throws(() => decodeCostArchive(zipSync({ 'cost.json': strToU8('{"credits":-1,"preempted":false}') })));

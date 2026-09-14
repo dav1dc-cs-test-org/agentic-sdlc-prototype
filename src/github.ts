@@ -267,7 +267,7 @@ export class GitHub implements Platform {
     return decodeReportArchive(new Uint8Array(response.data as ArrayBuffer));
   }
 
-  async cost(run: Run): Promise<{ runnerMs: number; credits: number; preempted: boolean }> {
+  async cost(run: Run, job: Job): Promise<Cost & { runnerMs: number }> {
     const jobs = await this.api.paginate(this.api.actions.listJobsForWorkflowRun, {
       ...this.scope, run_id: run.id, filter: 'latest', per_page: 100,
     });
@@ -277,12 +277,12 @@ export class GitHub implements Platform {
       const completed = Date.parse(item.completed_at ?? '');
       return total + (completed > started ? completed - started : 0);
     }, 0);
+    if (['scan', 'validate'].includes(job.stage)) return { runnerMs, credits: 0, preempted: false };
     const artifacts = await this.api.paginate(this.api.actions.listWorkflowRunArtifacts, {
       ...this.scope, run_id: run.id, per_page: 100,
     });
     const matches = artifacts.filter(artifact => artifact.name === 'sdlc-cost' && !artifact.expired);
-    // Deterministic check runs upload no cost artifact and consume no credits.
-    if (matches.length !== 1 || matches[0]!.size_in_bytes > 10_000) return { runnerMs, credits: 0, preempted: false };
+    if (matches.length !== 1 || matches[0]!.size_in_bytes > 10_000) return { runnerMs, credits: null, preempted: null };
     const response = await this.api.actions.downloadArtifact({
       ...this.scope, artifact_id: matches[0]!.id, archive_format: 'zip',
     });

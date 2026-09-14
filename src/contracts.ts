@@ -26,8 +26,9 @@ export type Change = z.infer<typeof changeSchema>;
 
 // Written by a workflow post-step, not by the agent, so the agent cannot forge its own cost.
 export const costSchema = z.object({
-  credits: z.number().min(0).max(100_000).finite(),
-  preempted: z.boolean(),
+  credits: z.number().min(0).max(100_000).finite().nullable(),
+  preempted: z.boolean().nullable(),
+  creditLimit: numberSchema.max(10_000).optional(),
 }).strict();
 export type Cost = z.infer<typeof costSchema>;
 
@@ -58,6 +59,16 @@ export const policySchema = z.object({
   }).strict(),
 }).strict();
 export type Policy = z.infer<typeof policySchema>;
+
+export function resolvePolicy(input: unknown, creditLimit?: string): Policy {
+  const policy = policySchema.parse(input);
+  if (creditLimit === undefined || creditLimit === '') return policy;
+  const maxJobCredits = policySchema.shape.maxJobCredits.safeParse(Number(creditLimit));
+  if (!maxJobCredits.success || String(maxJobCredits.data) !== creditLimit) {
+    throw new Error('SDLC_AIC_CREDIT_LIMIT must be a whole number between 1 and 10000');
+  }
+  return { ...policy, maxJobCredits: maxJobCredits.data };
+}
 
 const intakeEventSchema = z.object({
   action: z.literal('labeled'),

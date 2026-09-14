@@ -5,7 +5,7 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { validateChanges } from './changes.ts';
-import { policySchema, reportSchema, shaSchema, type Change, type Policy } from './contracts.ts';
+import { reportSchema, resolvePolicy, shaSchema, type Change, type Policy } from './contracts.ts';
 import { GitHub } from './github.ts';
 import { assertApproved, type Lifecycle, type Stage } from './lifecycle.ts';
 
@@ -64,7 +64,8 @@ export function collectChanges(source: string, sha: string, stage: Stage, policy
 }
 
 async function prepare(): Promise<void> {
-  const policy = policySchema.parse(JSON.parse(readFileSync(join(root, '.github/sdlc/policy.json'), 'utf8')));
+  const policy = resolvePolicy(JSON.parse(readFileSync(join(root, '.github/sdlc/policy.json'), 'utf8')),
+    process.env.SDLC_AIC_CREDIT_LIMIT);
   const input = {
     issue: z.coerce.number().int().positive().parse(process.env.SDLC_ISSUE), job: process.env.SDLC_JOB ?? '',
     sourceSha: shaSchema.parse(process.env.SDLC_SOURCE_SHA), controlSha: shaSchema.parse(process.env.SDLC_CONTROL_SHA),
@@ -82,6 +83,20 @@ async function prepare(): Promise<void> {
   const workspace = process.env.GITHUB_WORKSPACE ?? process.cwd();
   writeFileSync(join(workspace, '.sdlc-context.json'), JSON.stringify({ state: record.state, policy }, null, 2));
   mkdirSync(join(workspace, '.sdlc-output'), { recursive: true });
+  if (input.stage === 'security') {
+    const checkpoint = {
+      outcome: 'blocked' as const,
+      summary: 'Security review incomplete. Review has not started.\n\n' +
+        `Scope: source commit ${input.sourceSha}.\n` +
+        'Review coverage and evidence: no checks recorded.\n' +
+        'Outstanding work: all applicable security review areas.\n' +
+        'Stop reason and handoff: initial checkpoint only; complete the independent review before reporting pass.',
+    };
+    writeFileSync(join(workspace, '.sdlc-output/report.json'), JSON.stringify(checkpoint));
+    writeFileSync(join(workspace, '.sdlc-output/result.json'), JSON.stringify(reportSchema.parse({
+      ...checkpoint, jobId: input.job, inputSha: input.sourceSha, changes: [],
+    })));
+  }
 }
 
 function collect(): void {

@@ -72,9 +72,12 @@ credits, 466,487 agent tokens, and 3.6 hours. Two observations follow:
   consumed 371,400 input tokens against the agent's 171,562. Roughly half of all
   token traffic is the injection scan re-reading agent output.
 
-Three of issue #19's twelve runs finished near the 200-credit per-run cap. That
+Three of issue #19's twelve runs finished near the then-configured 200-credit per-run cap. That
 rate suggests the cap is close to the working size of these prompts rather than a
 distant safety net.
+
+Subsequent runs can use `SDLC_AIC_CREDIT_LIMIT` (default 250) to tune that limit
+without recompilation; the measurements above retain their original limits.
 
 ### Silent misconfiguration was the dominant setup failure
 
@@ -156,10 +159,15 @@ accounting, or the detection did not fire. **The positive path has never been
 observed in production.** Until a run is deliberately forced over a lowered cap
 and the flag is seen to flip, this metric should not be trusted.
 
-### Pre-emption is measured but never acted upon
+### Pre-emption is not an acceptance gate
 
-`spend.preempted` reaches the issue status comment and the pull request body and
-gates nothing. No control flow reads it.
+`spend.preempted` reaches the issue status comment and the pull request body but
+does not gate acceptance. Per-attempt diagnostics now also flag workflow-reported
+pre-emption and unknown usage, and failed Security attempts can expose their
+last validated checkpoint. Those comments are diagnostic, not passing evidence.
+Missing telemetry is now distinguished from measured zero or an explicit false
+signal. These changes improve visibility; they are not a live validation of the
+positive pre-emption signal.
 
 When the limiter stops a run, three things can happen to its output. Two are
 already safe: if no `result.json` was written the upload fails and the controller
@@ -174,8 +182,9 @@ inferences rather than mid-request. The agent is stopped at a boundary where it
 has probably already written a well-formed file.
 
 The consequence is that a feature can reach a pull request carrying work that was
-silently cut short, and the only trace is a number in the PR body that nothing
-obliges a reviewer to read.
+cut short, despite the new warning comment. The Security profile now requires
+explicit review coverage and provisional blocked checkpoints, but that is model
+guidance, not independent proof that a final pass means the review was complete.
 
 The cheapest mitigation is to treat a pre-empted run as not-pass regardless of
 the outcome it reports. Pre-emption is the one case where the harness knows more

@@ -40,8 +40,9 @@ permissions:
 engine:
   id: copilot
   model: ${{ vars.SDLC_MODEL || 'auto' }}
+  env:
+    GH_AW_MAX_AI_CREDITS: ${{ needs.budget.outputs.credit_limit }}
 timeout-minutes: 30
-max-ai-credits: 200
 concurrency:
   job-discriminator: ${{ github.run_id }}
 network:
@@ -72,7 +73,26 @@ safe-outputs:
     allowed-paths: [.sdlc-output/result.json]
     max-uploads: 1
 jobs:
+  budget:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    permissions: {}
+    outputs:
+      credit_limit: ${{ steps.limit.outputs.credit_limit }}
+    steps:
+      - name: Validate the per-run AI credit limit
+        id: limit
+        shell: bash
+        env:
+          SDLC_AIC_CREDIT_LIMIT: ${{ vars.SDLC_AIC_CREDIT_LIMIT || '250' }}
+        run: |
+          if [[ ! "$SDLC_AIC_CREDIT_LIMIT" =~ ^[1-9][0-9]{0,4}$ ]] || (( SDLC_AIC_CREDIT_LIMIT > 10000 )); then
+            echo '::error::SDLC_AIC_CREDIT_LIMIT must be a whole number between 1 and 10000'
+            exit 1
+          fi
+          printf 'credit_limit=%s\n' "$SDLC_AIC_CREDIT_LIMIT" >> "$GITHUB_OUTPUT"
   agent:
+    needs: [budget]
     timeout-minutes: 45
 steps:
   - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
@@ -90,17 +110,29 @@ steps:
       SDLC_SOURCE_SHA: ${{ inputs.source_sha }}
       SDLC_CONTROL_SHA: ${{ inputs.control_sha }}
       SDLC_STAGE: ${{ inputs.stage }}
+      SDLC_AIC_CREDIT_LIMIT: ${{ needs.budget.outputs.credit_limit }}
 post-steps:
   - name: Record the inference budget outcome
     if: always()
     env:
       CREDITS: ${{ steps.parse-mcp-gateway.outputs.aic }}
       PREEMPTED: ${{ steps.parse-mcp-gateway.outputs.ai_credits_rate_limit_error }}
+      CREDIT_LIMIT: ${{ needs.budget.outputs.credit_limit }}
     run: |
-      mkdir -p .sdlc-cost
-      case "$CREDITS" in ''|*[!0-9.]*) CREDITS=0 ;; esac
-      case "$PREEMPTED" in true) PREEMPTED=true ;; *) PREEMPTED=false ;; esac
-      printf '{"credits":%s,"preempted":%s}\n' "$CREDITS" "$PREEMPTED" > .sdlc-cost/cost.json
+      node --input-type=module <<'NODE'
+      import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+      const rawCredits = process.env.CREDITS ?? '';
+      const reportedCredits = rawCredits.trim() === '' ? NaN : Number(rawCredits);
+      const credits = Number.isFinite(reportedCredits) && reportedCredits >= 0 && reportedCredits <= 100000 ? reportedCredits : null;
+      const preempted = process.env.PREEMPTED === 'true' ? true : process.env.PREEMPTED === 'false' ? false : null;
+      const creditLimit = Number(process.env.CREDIT_LIMIT);
+      if (!Number.isSafeInteger(creditLimit) || creditLimit < 1 || creditLimit > 10000) throw new Error('Invalid captured credit limit');
+      mkdirSync('.sdlc-cost', { recursive: true });
+      writeFileSync('.sdlc-cost/cost.json', JSON.stringify({ credits, preempted, creditLimit }) + '\n');
+      appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+        `Per-inference-job credit limit: ${creditLimit} AI credits\n\n` +
+        `Measured usage: ${credits === null ? 'unavailable' : credits + ' AI credits'}; pre-emption signal: ${preempted === null ? 'unknown' : preempted}.\n`);
+      NODE
   - name: Return the workflow-measured cost
     if: always()
     uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f

@@ -57,14 +57,27 @@ variable `SDLC_MODEL` to a supported Copilot model ID. Unset or empty values
 default to `auto`. Updating this variable affects subsequent workflow runs
 without editing or recompiling workflows.
 
+Set the optional repository Actions variable `SDLC_AIC_CREDIT_LIMIT` to change
+the AI credit cap for each agent and threat-detection inference job. Unset or
+empty values default to `250`; accepted values are whole numbers from 1 to
+10,000. The limit is validated and captured once per agent workflow, so changing
+the variable affects subsequent runs without editing or recompiling workflows.
+
 Initial state is created only from that authorized human `labeled` event. The
 controller binds the request to the event's title and body; scheduled and manual
 reconciliation cannot authorize an issue that was already labeled. If the label
 was applied while automation was disabled, remove it and have a writer reapply
 it after enabling the controller.
 
-The first agent posts a versioned plan on the issue and stops. The requester or
-a repository writer can approve that exact version with a new comment:
+Research includes a **Technology and Architecture Decision**: application context,
+product requirements, credible alternatives, a recommendation, pipeline support,
+and any maintainer prerequisites. It must distinguish the application's needs
+from the controller's stack. Unsupported recommendations are reported as blocked
+with concrete prerequisites, not silently replaced with the controller's stack.
+This guidance does not add new language support or weaken validation gates.
+
+The controller posts a supported research plan with a version and stops. The
+requester or a repository writer can approve that exact version with a new comment:
 
 ```text
 /sdlc approve v1
@@ -154,6 +167,20 @@ permissions, regular-file types, baseline tests, and branch history before
 writing through the Git Data API. It never executes candidate code or artifact
 scripts. A replay after a branch write can recover the already-published commit.
 
+Security reviews keep provisional `blocked` checkpoints with reviewed areas,
+findings, and outstanding work. Failed attempts receive diagnostic comments
+with their job, commit, usage, stop signal, and any valid Security checkpoint.
+Missing usage is reported as unavailable, not measured zero. Partial reports
+from failed runs never supply passing evidence; see
+[Incomplete Security Reviews](docs/operations.md#incomplete-security-reviews).
+Budget telemetry does not yet independently gate acceptance.
+
+Testing derives a risk-based coverage map from approved behavior even when the
+issue gives few test details. It must not invent missing product decisions or
+use the implementation itself as the test oracle. Reports identify executed
+tests, defects, and remaining checks; ambiguous behavior or unavailable required
+validation is blocked. See [Test Design and Coverage](docs/operations.md#test-design-and-coverage).
+
 Every source change invalidates earlier gate evidence. Test additions trigger
 new deterministic scans and a new security-agent review before validation and
 final review. The final PR includes the approved plan, task context, workflow
@@ -173,8 +200,10 @@ issue when the PR merges.
 - Six tasks, two automatic repair rounds, two infrastructure attempts, and
  forty total jobs per lifecycle by default. Manual retry does not reset the
  total job budget.
-- Each agent execution has a 30-minute timeout and a 200-AI-credit cap. Actions
- minutes are additional. Configure organization spending controls as well.
+- Each agent execution has a 30-minute timeout. The per-inference-job AI credit
+ cap is `SDLC_AIC_CREDIT_LIMIT` (default `250`), applied separately to agent and
+ threat-detection jobs, not to their combined usage. Actions minutes are
+ additional. Configure organization spending controls as well.
 - Coverage must reach 80% lines and 70% branches, with no drop from the baseline.
  Coverage is a minimum signal, not a substitute for meaningful assertions.
 - Existing baseline test files and automation policy are immutable to agents.

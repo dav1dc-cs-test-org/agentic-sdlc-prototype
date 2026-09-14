@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { parse } from 'yaml';
+import { costSchema, resolvePolicy } from '../src/contracts.ts';
 
 const read = (name: string) => parse(readFileSync(`.github/workflows/${name}`, 'utf8'));
 
@@ -32,7 +36,7 @@ test('generated agents have no publishing credentials or direct write permission
   assert.equal(frontmatter.permissions.issues, 'read');
   assert.equal(frontmatter.permissions['pull-requests'], 'read');
   assert.equal(frontmatter.checkout[0].ref, '${{ github.sha }}');
-  assert.ok(frontmatter['max-ai-credits'] <= 200);
+  assert.equal(frontmatter.engine.env.GH_AW_MAX_AI_CREDITS, '${{ needs.budget.outputs.credit_limit }}');
   assert.equal(frontmatter['safe-outputs']['report-failure-as-issue'], false);
   assert.equal(frontmatter['safe-outputs']['report-failed-jobs'], false);
   assert.equal(frontmatter['safe-outputs']['missing-tool'], false);
@@ -56,7 +60,8 @@ test('agents use the repository model with an auto fallback for inference and me
   const source = readFileSync('.github/workflows/sdlc-agent.md', 'utf8');
   const frontmatter = parse(source.split('---')[1]!);
   const model = "${{ vars.SDLC_MODEL || 'auto' }}";
-  assert.deepEqual(frontmatter.engine, { id: 'copilot', model });
+  assert.equal(frontmatter.engine.id, 'copilot');
+  assert.equal(frontmatter.engine.model, model);
   const compiled = read('sdlc-agent.lock.yml');
   for (const [job, variable] of [
     ['activation', 'GH_AW_INFO_MODEL'],
@@ -99,12 +104,171 @@ test('manual workflows pin actions to immutable commits and never persist git cr
 
 test('cost accounting stays bound to the compiler and policy it measures', () => {
   const compiled = readFileSync('.github/workflows/sdlc-agent.lock.yml', 'utf8');
-  const policy = JSON.parse(readFileSync('.github/sdlc/policy.json', 'utf8'));
   // A renamed gh-aw step would silently report every run as never pre-empted.
   assert.ok(compiled.includes('id: parse-mcp-gateway'), 'the gh-aw gateway parser step must still exist');
   assert.match(compiled, /PREEMPTED: \$\{\{ steps\.parse-mcp-gateway\.outputs\.ai_credits_rate_limit_error \}\}/);
-  assert.match(compiled, /GH_AW_MAX_AI_CREDITS: "(\d+)"/);
-  assert.equal(Number(/GH_AW_MAX_AI_CREDITS: "(\d+)"/.exec(compiled)![1]), policy.maxJobCredits);
+  const workflow = parse(compiled);
+  const limit = '${{ needs.budget.outputs.credit_limit }}';
+  assert.equal(workflow.jobs.budget.permissions.contents, undefined);
+  assert.equal(workflow.jobs.budget.outputs.credit_limit, '${{ steps.limit.outputs.credit_limit }}');
+  for (const name of ['agent', 'detection']) {
+    assert.ok(workflow.jobs[name].needs.includes('budget'));
+    const execution = workflow.jobs[name].steps.find((step: { env?: Record<string, string> }) => step.env?.COPILOT_MODEL);
+    assert.equal(execution.env.GH_AW_MAX_AI_CREDITS, limit);
+    assert.ok(/\\"maxAiCredits\\":\$\{GH_AW_MAX_AI_CREDITS\}/.test(execution.run));
+  }
+  const prepare = workflow.jobs.agent.steps.find((step: { run?: string }) => step.run?.includes('src/worker.ts prepare'));
+  assert.equal(prepare.env.SDLC_AIC_CREDIT_LIMIT, limit);
+  const receipt = workflow.jobs.agent.steps.find((step: { env?: Record<string, string> }) => step.env?.CREDIT_LIMIT);
+  assert.equal(receipt.env.CREDIT_LIMIT, limit);
+  const controller = read('sdlc-controller.yml').jobs.reconcile.steps.find((step: { run?: string }) => step.run === 'node src/main.ts');
+  assert.equal(controller.env.SDLC_AIC_CREDIT_LIMIT, "${{ vars.SDLC_AIC_CREDIT_LIMIT || '250' }}");
+});
+
+test('credit limit validation accepts bounded integers and rejects unsafe runtime values', () => {
+  const source = parse(readFileSync('.github/workflows/sdlc-agent.md', 'utf8').split('---')[1]!);
+  const step = source.jobs.budget.steps[0];
+  assert.equal(step.env.SDLC_AIC_CREDIT_LIMIT, "${{ vars.SDLC_AIC_CREDIT_LIMIT || '250' }}");
+  assert.equal(source['max-ai-credits'], undefined);
+  const policy = JSON.parse(readFileSync('.github/sdlc/policy.json', 'utf8'));
+  assert.equal(policy.maxJobCredits, 250);
+  const directory = mkdtempSync(join(tmpdir(), 'sdlc-credit-limit-'));
+  try {
+    for (const [index, value] of ['250', '1', '500', '10000', '0', '-1', '1.5', '10001', 'NaN',
+      'auto', '1e3', '001', ' 250 ', '250\n', '1\n2', '1;exit 0', ''].entries()) {
+      const output = join(directory, `${index}.txt`);
+      const result = spawnSync('bash', ['-e', '-c', step.run], { encoding: 'utf8',
+        env: { SDLC_AIC_CREDIT_LIMIT: value, GITHUB_OUTPUT: output } });
+      if (index < 4) {
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(readFileSync(output, 'utf8'), `credit_limit=${value}\n`);
+        assert.equal(resolvePolicy(policy, value).maxJobCredits, Number(value));
+      } else {
+        assert.equal(result.status, 1, value);
+        assert.match(result.stdout, /SDLC_AIC_CREDIT_LIMIT must be a whole number/);
+        assert.throws(() => readFileSync(output), /ENOENT/);
+        if (value !== '') assert.throws(() => resolvePolicy(policy, value), /SDLC_AIC_CREDIT_LIMIT/);
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('generated firewall configurations enforce the chosen limit instead of a compiler default', () => {
+  const workflow = read('sdlc-agent.lock.yml');
+  const directory = mkdtempSync(join(tmpdir(), 'sdlc-firewall-budget-'));
+  mkdirSync(join(directory, 'gh-aw'));
+  try {
+    for (const name of ['agent', 'detection']) {
+      const execution = workflow.jobs[name].steps.find((step: { env?: Record<string, string> }) => step.env?.COPILOT_MODEL);
+      const writeConfig = execution.run.split('\n').find((line: string) => line.startsWith("printf '%s\\n' ") && line.includes('awf-config.json'));
+      assert.ok(writeConfig, 'the compiler must expose the runtime firewall configuration');
+      for (const limit of [250, 575]) {
+        const result = spawnSync('bash', ['-e', '-c', writeConfig], { encoding: 'utf8', env: {
+          GH_AW_MAX_AI_CREDITS: String(limit), RUNNER_TEMP: directory,
+        } });
+        assert.equal(result.status, 0, result.stderr);
+        const config = JSON.parse(readFileSync(join(directory, 'gh-aw/awf-config.json'), 'utf8'));
+        assert.equal(config.apiProxy.maxAiCredits, limit);
+        assert.equal(config.apiProxy.enabled, true);
+        assert.equal(config.apiProxy.enableTokenSteering, true);
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('workflow-written cost receipt includes the exact limit used by the inference jobs', () => {
+  const source = parse(readFileSync('.github/workflows/sdlc-agent.md', 'utf8').split('---')[1]!);
+  const step = source['post-steps'].find((step: { env?: Record<string, string> }) => step.env?.CREDIT_LIMIT);
+  const directory = mkdtempSync(join(tmpdir(), 'sdlc-cost-receipt-'));
+  try {
+    const summary = join(directory, 'summary.md');
+    const result = spawnSync('bash', ['-e', '-c', step.run], { cwd: directory, encoding: 'utf8', env: {
+      PATH: process.env.PATH, CREDITS: '401.5', PREEMPTED: 'true', CREDIT_LIMIT: '400', GITHUB_STEP_SUMMARY: summary,
+    } });
+    assert.equal(result.status, 0, result.stderr);
+    const cost = costSchema.parse(JSON.parse(readFileSync(join(directory, '.sdlc-cost/cost.json'), 'utf8')));
+    assert.deepEqual(cost, { credits: 401.5, preempted: true, creditLimit: 400 });
+    assert.match(readFileSync(summary, 'utf8'), /400 AI credits/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('workflow cost receipts distinguish missing signals from measured zero and false', () => {
+  const source = parse(readFileSync('.github/workflows/sdlc-agent.md', 'utf8').split('---')[1]!);
+  const step = source['post-steps'].find((step: { env?: Record<string, string> }) => step.env?.CREDIT_LIMIT);
+  const directory = mkdtempSync(join(tmpdir(), 'sdlc-missing-cost-'));
+  try {
+    for (const [credits, preempted, expectedCredits, expectedPreempted] of [
+      ['', '', null, null], ['invalid', 'invalid', null, null], ['..', 'false', null, false],
+      ['-1', 'false', null, false], ['Infinity', 'true', null, true],
+      ['100001', 'true', null, true], ['0', 'false', 0, false], ['249', '', 249, null],
+    ] as const) {
+      const result = spawnSync('bash', ['-e', '-c', step.run], { cwd: directory, encoding: 'utf8', env: {
+        PATH: process.env.PATH, CREDITS: credits, PREEMPTED: preempted, CREDIT_LIMIT: '250',
+        GITHUB_STEP_SUMMARY: join(directory, 'summary.md'),
+      } });
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(costSchema.parse(JSON.parse(readFileSync(join(directory, '.sdlc-cost/cost.json'), 'utf8'))),
+        { credits: expectedCredits, preempted: expectedPreempted, creditLimit: 250 });
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('research requires a product-fit architecture decision and blocks unsupported execution', () => {
+  const source = readFileSync('.github/agents/research.agent.md', 'utf8');
+  const profile = parse(source.split('---')[1]!);
+  assert.equal(profile.name, 'sdlc-research');
+  assert.deepEqual(profile.tools, ['read', 'search', 'execute']);
+  assert.match(source, /## Technology and Architecture Decision/);
+  for (const section of ['Application baseline', 'Product requirements', 'Options and tradeoffs',
+    'Recommendation', 'Pipeline compatibility', 'Prerequisites']) {
+    assert.ok(source.includes(`**${section}**`), `Research must address ${section}`);
+  }
+  const instructions = source.replace(/\s+/g, ' ');
+  assert.match(instructions, /controller's implementation language does not dictate the application stack/);
+  assert.match(instructions, /`supported`, `requires maintainer changes`, or `unknown`/);
+  assert.match(instructions, /return `blocked`.*report's `summary`, not only in `plan`/);
+  assert.match(instructions, /Plan approval does not authorize protected-path changes or weaker gates/);
+});
+
+test('security requires explicit completeness and non-passing review checkpoints', () => {
+  const source = readFileSync('.github/agents/security.agent.md', 'utf8');
+  const profile = parse(source.split('---')[1]!);
+  assert.equal(profile.name, 'sdlc-security');
+  assert.deepEqual(profile.tools, ['read', 'search', 'execute']);
+  for (const heading of ['Risk-first Review', 'Checkpoints and Budget', 'Result Decision', 'Required Summary']) {
+    assert.ok(source.includes(`## ${heading}`));
+  }
+  const instructions = source.replace(/\s+/g, ' ');
+  for (const section of ['Scope and evidence', 'Review coverage', 'Findings', 'Outstanding work', 'Stop reason and handoff']) {
+    assert.ok(source.includes(`**${section}**`));
+  }
+  assert.match(instructions, /outcome: "blocked"/);
+  assert.match(instructions, /node control\/src\/worker\.ts collect/);
+  assert.match(instructions, /Never leave a provisional `pass` on disk/);
+  assert.match(instructions, /Return `blocked` if required review is unfinished/);
+  assert.match(instructions, /do not equate it to remaining credits/);
+  assert.match(instructions, /failed runs are untrusted diagnostics, never passing evidence/);
+});
+
+test('testing derives coverage from approved behavior and reports ambiguity and execution gaps', () => {
+  const source = readFileSync('.github/agents/test.agent.md', 'utf8');
+  const profile = parse(source.split('---')[1]!);
+  assert.equal(profile.name, 'sdlc-test');
+  assert.deepEqual(profile.tools, ['read', 'search', 'edit', 'execute']);
+  for (const heading of ['Derive the Test Plan', 'Assertions and Execution', 'Scope and Result Decision', 'Required Summary']) {
+    assert.ok(source.includes(`## ${heading}`));
+  }
+  for (const section of ['Expected behavior', 'Coverage map', 'Derived cases', 'Risk and order',
+    'Test level and tooling', 'Ambiguity and gaps', 'Execution evidence', 'Defects and questions', 'Remaining work']) {
+    assert.ok(source.includes(`**${section}**`));
+  }
+  const instructions = source.replace(/\s+/g, ' ');
+  assert.match(instructions, /Fill missing test details, not missing product decisions/);
+  assert.match(instructions, /Run every new or changed test/);
+  assert.match(instructions, /Node or DOM-mock tests do not prove browser rendering/);
+  assert.match(instructions, /Return `blocked` for ambiguous expected behavior/);
+  assert.match(instructions, /Existing baseline test files are immutable/);
+  assert.match(instructions, /proposed test changes are not published.*`changes_requested` report/);
 });
 
 test('every agent stage has a valid repository-scoped role profile', () => {

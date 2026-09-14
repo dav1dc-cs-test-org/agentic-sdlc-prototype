@@ -1,12 +1,34 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { lifecycleSchema, migrateLifecycle, parseIntakeEvent, policySchema, reportSchema } from '../src/contracts.ts';
+import { costSchema, lifecycleSchema, migrateLifecycle, parseIntakeEvent, policySchema, reportSchema, resolvePolicy } from '../src/contracts.ts';
 import { validateChanges } from '../src/changes.ts';
 import { approvePlan, digest, makePlan } from '../src/domain.ts';
 import { createLifecycle } from '../src/lifecycle.ts';
 
 export const policy = policySchema.parse(JSON.parse(readFileSync('.github/sdlc/policy.json', 'utf8')));
+
+test('runtime credit limit defaults to 250 and overrides only the policy credit budget', () => {
+  assert.equal(policy.maxJobCredits, 250);
+  for (const value of [undefined, '']) assert.deepEqual(resolvePolicy(policy, value), policy);
+  for (const value of ['1', '250', '500', '10000']) {
+    assert.deepEqual(resolvePolicy(policy, value), { ...policy, maxJobCredits: Number(value) });
+  }
+  for (const value of ['0', '-1', '1.5', '10001', 'NaN', 'auto', '1e3', '001', ' 250 ', '250\n', '1\n2', '1;exit 0']) {
+    assert.throws(() => resolvePolicy(policy, value), /SDLC_AIC_CREDIT_LIMIT/);
+  }
+  assert.throws(() => resolvePolicy({ ...policy, coverage: { ...policy.coverage, lines: 0 } }, '500'));
+});
+
+test('cost receipts preserve an optional validated run-time credit limit', () => {
+  const legacy = { credits: 50, preempted: false };
+  assert.deepEqual(costSchema.parse(legacy), legacy);
+  assert.deepEqual(costSchema.parse({ credits: null, preempted: null }), { credits: null, preempted: null });
+  assert.deepEqual(costSchema.parse({ ...legacy, creditLimit: 500 }), { ...legacy, creditLimit: 500 });
+  for (const creditLimit of [0, -1, 1.5, 10001, null, '500']) {
+    assert.throws(() => costSchema.parse({ ...legacy, creditLimit }));
+  }
+});
 
 test('state and worker contracts reject unexpected authority fields', () => {
   const state = createLifecycle(123, 'requester', 'Feature', 'a'.repeat(40));

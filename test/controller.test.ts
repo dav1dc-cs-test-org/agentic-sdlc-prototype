@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { Controller, RetryablePlatformError, type Comment, type Platform, type RecordState, type Run } from '../src/controller.ts';
-import { lifecycleSchema, migrateLifecycle, policySchema, type Change, type Intake, type Report } from '../src/contracts.ts';
+import { lifecycleSchema, migrateLifecycle, policySchema, type Change, type Cost, type Intake, type Report } from '../src/contracts.ts';
 import { createLifecycle, type Job, type Lifecycle, type Task } from '../src/lifecycle.ts';
 
 const policy = policySchema.parse(JSON.parse(readFileSync('.github/sdlc/policy.json', 'utf8')));
@@ -79,7 +79,7 @@ class FakePlatform implements Platform {
     if (this.reportFailure) throw this.reportFailure;
     return this.reports.get(run.id)!;
   }
-  costs: { runnerMs: number; credits: number; preempted: boolean }[] = [];
+  costs: (Cost & { runnerMs: number })[] = [];
   charged: number[] = [];
   async cost(run: Run) {
     this.charged.push(run.id);
@@ -609,25 +609,154 @@ test('every completed run is charged once, including one the credit limiter pre-
   const before = platform.stored!.state.spend;
   assert.ok(before.runs > 0, 'earlier stages must already be charged');
 
-  platform.costs = [{ runnerMs: 120_000, credits: 190, preempted: false }];
+  const nearLimitCredits = policy.maxJobCredits * 0.95;
+  const preemptedCredits = policy.maxJobCredits + 5;
+  platform.costs = [{ runnerMs: 120_000, credits: nearLimitCredits, preempted: false }];
   platform.finish({ changes: [{ path: 'feature.txt', content: 'First' }] });
   await controller.tick(123);
   assert.equal(platform.stored!.state.spend.nearLimit, 1);
   assert.equal(platform.stored!.state.spend.preempted, 0);
 
-  platform.costs = [{ runnerMs: 30_000, credits: 205, preempted: true }];
+  platform.costs = [{ runnerMs: 30_000, credits: preemptedCredits, preempted: true }];
   platform.finish({ changes: [{ path: 'feature.txt', content: 'Both' }] });
   await controller.tick(123);
   const spend = platform.stored!.state.spend;
   assert.equal(spend.preempted, 1);
   assert.equal(spend.nearLimit, 1, 'a pre-empted run must not also count as near the limit');
-  assert.equal(spend.credits, before.credits + 395);
+  assert.equal(spend.credits, before.credits + nearLimitCredits + preemptedCredits);
   assert.equal(spend.runnerMs, before.runnerMs + 150_000);
 
   const charged = platform.charged.length;
   await controller.tick(123);
   assert.equal(platform.charged.length, charged, 'a run is charged once, not once per tick');
   assert.doesNotMatch(platform.outputs.get('status')!, /earlier costs unavailable/);
+});
+
+test('near-limit accounting uses the run receipt even after the configured budget changes', async () => {
+  const { platform, controller } = await coding();
+  platform.costs = [{ runnerMs: 60_000, credits: 300, preempted: false, creditLimit: 500 }];
+  platform.finish();
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.spend.nearLimit, 0);
+  platform.costs = [{ runnerMs: 60_000, credits: 80, preempted: false, creditLimit: 100 }];
+  platform.finish();
+  platform.reportFailure = new RetryablePlatformError('Try later');
+  await assert.rejects(controller.tick(123), /Try later/);
+  await assert.rejects(controller.tick(123), /Try later/);
+  assert.equal(platform.stored!.state.spend.nearLimit, 1);
+  assert.match(platform.outputs.get('status')!, /Current per-job limit: 250 AI credits/);
+});
+
+test('controller entry point resolves the credit override and rejects invalid limits before API calls', () => {
+  const state = { ...createLifecycle(1, 'requester', 'Feature', baseSha), phase: 'merged' };
+  for (const value of ['', '500', '0', '-1', '10001', 'not-a-number']) {
+    const fixture = controllerProcessFixture({ 1: state });
+    try {
+      const result = fixture.execute({ SDLC_AIC_CREDIT_LIMIT: value });
+      if (value === '' || value === '500') {
+        assert.equal(result.status, 0, result.stderr);
+        assert.ok(fixture.read().comments['1'][0].body.includes(`Current per-job limit: ${value || '250'} AI credits`));
+      } else {
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, /SDLC_AIC_CREDIT_LIMIT/);
+        assert.deepEqual(fixture.read().requests, []);
+      }
+    } finally { fixture.dispose(); }
+  }
+});
+
+test('failed Security attempts surface current checkpoints without accepting any review evidence', async () => {
+  for (const outcome of ['blocked', 'pass'] as const) {
+    const { platform, controller } = await coding();
+    for (let completion = 0; completion < 3; completion += 1) { platform.finish(); await controller.tick(123); }
+    const job = platform.stored!.state.job!;
+    assert.equal(job.stage, 'security');
+    platform.costs = [{ runnerMs: 60_000, credits: 252, preempted: true, creditLimit: 250 }];
+    platform.finish({ outcome, summary: 'Injection checks reviewed. Authorization checks still pending.' }, 'failure');
+    await controller.tick(123);
+    const diagnostic = [...platform.outputs.values()].find(message => message.includes('### Worker attempt diagnostics'))!;
+    assert.match(diagnostic, /Stage: \*\*security\*\*/);
+    assert.ok(diagnostic.includes(job.inputSha));
+    assert.ok(diagnostic.includes(job.controlSha));
+    assert.ok(diagnostic.includes(job.planHash!));
+    assert.match(diagnostic, /Measured usage: 252\.0 AI credits/);
+    assert.match(diagnostic, /Pre-emption: reported by the workflow/);
+    assert.match(diagnostic, /untrusted diagnostic only, not accepted evidence/);
+    assert.match(diagnostic, /Authorization checks still pending/);
+    assert.equal(platform.stored!.state.evidence.some(item => item.stage === 'security'), false);
+    assert.equal(platform.stored!.state.phase, 'security');
+    assert.equal(platform.published, 0);
+  }
+});
+
+test('failed Security attempts discard stale checkpoints and identify unknown usage', async () => {
+  for (const invalid of [
+    { inputSha: 'f'.repeat(40) }, { jobId: '123-999' }, { changes: [{ path: 'feature.txt', content: 'Unauthorized' }] },
+  ]) {
+    const { platform, controller } = await coding();
+    for (let completion = 0; completion < 3; completion += 1) { platform.finish(); await controller.tick(123); }
+    const credits = platform.stored!.state.spend.credits;
+    platform.costs = [{ runnerMs: 60_000, credits: null, preempted: null }];
+    platform.finish({ ...invalid, summary: 'Invalid report must not be shown' }, 'failure');
+    await controller.tick(123);
+    const diagnostic = [...platform.outputs.values()].find(message => message.includes('### Worker attempt diagnostics'))!;
+    assert.match(diagnostic, /Measured usage: unavailable/);
+    assert.match(diagnostic, /Pre-emption: unknown/);
+    assert.match(diagnostic, /No valid current-job Security checkpoint/);
+    assert.doesNotMatch(diagnostic, /Invalid report must not be shown/);
+    assert.equal(platform.stored!.state.spend.credits, credits);
+    assert.equal(platform.stored!.state.spend.historyComplete, false);
+    assert.equal(platform.stored!.state.spend.preempted, 0);
+    assert.equal(platform.stored!.state.evidence.some(item => item.stage === 'security'), false);
+    assert.equal(platform.changed, 0);
+  }
+});
+
+test('retrying diagnostic publication never duplicates the attempt record or its cost', async () => {
+  const { platform, controller } = await coding();
+  for (let completion = 0; completion < 3; completion += 1) { platform.finish(); await controller.tick(123); }
+  const before = platform.stored!.state.spend;
+  const cost = { runnerMs: 60_000, credits: 252, preempted: true, creditLimit: 250 };
+  platform.costs = [cost, cost];
+  platform.finish({ outcome: 'blocked', summary: 'Authorization checks pending.' }, 'failure');
+  const comment = platform.comment.bind(platform);
+  let interrupted = true;
+  platform.comment = async (number, key, body) => {
+    await comment(number, key, body);
+    if (key.startsWith('attempt:') && interrupted) { interrupted = false; throw new Error('Lost comment acknowledgement'); }
+  };
+  await assert.rejects(controller.tick(123), /Lost comment acknowledgement/);
+  assert.deepEqual(platform.stored!.state.spend, before);
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.spend.runs, before.runs + 1);
+  assert.equal(platform.stored!.state.spend.credits, before.credits + 252);
+  assert.equal(platform.stored!.state.spend.preempted, before.preempted + 1);
+  assert.equal([...platform.outputs.keys()].filter(key => key.startsWith('attempt:')).length, 1);
+  assert.equal(platform.stored!.state.evidence.some(item => item.stage === 'security'), false);
+});
+
+test('an unfinished Security checkpoint blocks even when its workflow concludes successfully', async () => {
+  const { platform, controller } = await coding();
+  for (let completion = 0; completion < 3; completion += 1) { platform.finish(); await controller.tick(123); }
+  const evidence = platform.stored!.state.evidence;
+  platform.finish({ outcome: 'blocked', summary: 'Security review incomplete. Authorization checks pending.' });
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.phase, 'blocked');
+  assert.equal(platform.stored!.state.resumePhase, 'security');
+  assert.deepEqual(platform.stored!.state.evidence, evidence);
+  assert.match(platform.outputs.get('status')!, /Security review incomplete/);
+  assert.equal(platform.published, 0);
+});
+
+test('missing pre-emption signals do not classify a run as confirmed near-limit', async () => {
+  const { platform, controller } = await coding();
+  platform.costs = [{ runnerMs: 60_000, credits: 249, preempted: null, creditLimit: 250 }];
+  platform.finish();
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.spend.nearLimit, 0);
+  assert.equal(platform.stored!.state.spend.preempted, 0);
+  assert.match([...platform.outputs.values()].find(message => message.includes('### Worker attempt diagnostics'))!,
+    /Pre-emption: unknown/);
 });
 
 test('migrated in-flight jobs preserve cost history and charge each run only once across retries', async () => {

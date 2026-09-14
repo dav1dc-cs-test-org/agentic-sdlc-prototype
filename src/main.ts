@@ -1,10 +1,10 @@
 import { Octokit } from '@octokit/rest';
 import { readFileSync } from 'node:fs';
 import { Controller } from './controller.ts';
-import { parseIntakeEvent, policySchema } from './contracts.ts';
+import { parseIntakeEvent, resolvePolicy } from './contracts.ts';
 import { GitHub } from './github.ts';
 
-const policy = policySchema.parse(JSON.parse(readFileSync('.github/sdlc/policy.json', 'utf8')));
+const policy = resolvePolicy(JSON.parse(readFileSync('.github/sdlc/policy.json', 'utf8')), process.env.SDLC_AIC_CREDIT_LIMIT);
 if (!process.env.GH_TOKEN) throw new Error('A scoped GitHub App token is required');
 const github = new GitHub(process.env.GITHUB_REPOSITORY ?? '', policy, process.env.SDLC_BOT_LOGIN ?? '',
   new Octokit({ auth: process.env.GH_TOKEN, request: { timeout: 30_000 } }));

@@ -9,7 +9,7 @@
   "dispatchGraceMinutes": 10,
   "maxFiles": 30,
   "maxChangeBytes": 512000,
-  "maxJobCredits": 200,
+  "maxJobCredits": 250,
   "protectedPaths": [
     ".github/**", ".agents/**", ".vscode/**", "AGENTS.md", "**/AGENTS.md",
     ".npmrc", "**/.npmrc", ".gitmodules", ".gitattributes", "**/.gitattributes",

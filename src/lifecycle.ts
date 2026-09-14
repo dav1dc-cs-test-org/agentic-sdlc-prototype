@@ -87,13 +87,17 @@ export function createLifecycle(issueNumber: number, requester: string, request:
 
 // A run the limiter pre-empted is counted only as pre-empted: the two outcomes are exclusive.
 export function recordSpend(state: Lifecycle, cost: {
-  runnerMs: number; credits: number; preempted: boolean;
+  runnerMs: number; credits: number | null; preempted: boolean | null; creditLimit?: number;
 }, maxCredits: number): void {
+  const creditLimit = cost.creditLimit ?? maxCredits;
   state.spend.runs += 1;
   state.spend.runnerMs += Math.max(0, cost.runnerMs);
-  state.spend.credits += Math.max(0, cost.credits);
+  state.spend.credits += Math.max(0, cost.credits ?? 0);
+  if (cost.credits === null) state.spend.historyComplete = false;
   if (cost.preempted) state.spend.preempted += 1;
-  else if (maxCredits > 0 && cost.credits >= maxCredits * 0.8) state.spend.nearLimit += 1;
+  else if (cost.preempted === false && cost.credits !== null && creditLimit > 0 && cost.credits >= creditLimit * 0.8) {
+    state.spend.nearLimit += 1;
+  }
 }
 
 export function validateTasks(tasks: Task[], maximum: number): void {

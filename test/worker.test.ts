@@ -88,7 +88,7 @@ globalThis.fetch = async (input, init) => {
         GITHUB_OUTPUT: output, GITHUB_REPOSITORY: 'owner/repo', GH_TOKEN: 'unused',
         SDLC_BOT_LOGIN: 'sdlc[bot]', SDLC_ISSUE: '123', SDLC_JOB: job.id,
         SDLC_SOURCE_SHA: job.inputSha, SDLC_CONTROL_SHA: job.controlSha, SDLC_STAGE: job.stage,
-        GITHUB_SHA: job.controlSha, GITHUB_ACTOR: 'sdlc[bot]', ...overrides,
+        GITHUB_SHA: job.controlSha, GITHUB_ACTOR: 'sdlc[bot]', SDLC_AIC_CREDIT_LIMIT: '', ...overrides,
       },
     });
     return { result, workspace, output };
@@ -98,6 +98,28 @@ globalThis.fetch = async (input, init) => {
     assert.equal(valid.result.status, 0, valid.result.stderr);
     assert.deepEqual(JSON.parse(readFileSync(join(valid.workspace, '.sdlc-context.json'), 'utf8')), { state, policy });
     assert.equal(readFileSync(valid.output, 'utf8'), `base_sha=${state.baseSha}\n`);
+    assert.throws(() => readFileSync(join(valid.workspace, '.sdlc-output/result.json')), /ENOENT/);
+
+    const securityState = structuredClone(state);
+    securityState.phase = 'security';
+    securityState.job!.stage = 'security';
+    const security = execute('security', securityState, { SDLC_STAGE: 'security' });
+    assert.equal(security.result.status, 0, security.result.stderr);
+    const checkpoint = JSON.parse(readFileSync(join(security.workspace, '.sdlc-output/report.json'), 'utf8'));
+    assert.equal(checkpoint.outcome, 'blocked');
+    assert.match(checkpoint.summary, /Security review incomplete\. Review has not started/);
+    assert.match(checkpoint.summary, /Outstanding work: all applicable security review areas/);
+    assert.deepEqual(JSON.parse(readFileSync(join(security.workspace, '.sdlc-output/result.json'), 'utf8')),
+      { ...checkpoint, jobId: job.id, inputSha: job.inputSha, changes: [] });
+
+    const configured = execute('configured', state, { SDLC_AIC_CREDIT_LIMIT: '500' });
+    assert.equal(configured.result.status, 0, configured.result.stderr);
+    assert.deepEqual(JSON.parse(readFileSync(join(configured.workspace, '.sdlc-context.json'), 'utf8')),
+      { state, policy: { ...policy, maxJobCredits: 500 } });
+    const invalidLimit = execute('invalid-limit', state, { SDLC_AIC_CREDIT_LIMIT: '0' });
+    assert.notEqual(invalidLimit.result.status, 0);
+    assert.match(invalidLimit.result.stderr, /SDLC_AIC_CREDIT_LIMIT/);
+    assert.throws(() => readFileSync(join(invalidLimit.workspace, '.sdlc-context.json')), /ENOENT/);
 
     const legacy = execute('legacy', { ...state, schemaVersion: 1, spend: undefined });
     assert.equal(legacy.result.status, 0, legacy.result.stderr);
@@ -111,12 +133,15 @@ globalThis.fetch = async (input, init) => {
       ['approval', { ...state, approval: { ...state.approval!, planHash: 'd'.repeat(64) } }, {}],
       ['legacy-approval', { ...state, schemaVersion: 1, spend: undefined,
         approval: { ...state.approval!, planHash: 'd'.repeat(64) } }, {}],
+      ['security-approval', { ...securityState,
+        approval: { ...securityState.approval!, planHash: 'd'.repeat(64) } }, { SDLC_STAGE: 'security' }],
     ];
     for (const [name, stored, overrides] of mismatches) {
       const rejected = execute(name, stored, overrides);
       assert.notEqual(rejected.result.status, 0);
       assert.match(rejected.result.stderr, /registered job|approved plan/);
       assert.throws(() => readFileSync(join(rejected.workspace, '.sdlc-context.json')), /ENOENT/);
+      assert.throws(() => readFileSync(join(rejected.workspace, '.sdlc-output/result.json')), /ENOENT/);
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
@@ -167,6 +192,20 @@ test('collect entry point derives authority and changes from registered state', 
       jobId: job.id, inputSha: job.inputSha, outcome: 'pass', summary: 'Done',
       changes: [{ path: 'feature.txt', content: 'actual change' }],
     });
+    rmSync(join(source, 'feature.txt'));
+    state.phase = 'security';
+    job.stage = 'security';
+    writeFileSync(join(directory, '.sdlc-context.json'), JSON.stringify({ state, policy }));
+    for (const summary of ['Security review incomplete. All checks pending.',
+      'Security review incomplete. Injection reviewed; authorization pending.']) {
+      writeFileSync(join(output, 'report.json'), JSON.stringify({ outcome: 'blocked', summary }));
+      const checkpoint = spawnSync(process.execPath, [script, 'collect'], {
+        cwd: directory, env: { ...process.env, GITHUB_WORKSPACE: directory }, encoding: 'utf8',
+      });
+      assert.equal(checkpoint.status, 0, checkpoint.stderr);
+      assert.deepEqual(JSON.parse(readFileSync(join(output, 'result.json'), 'utf8')),
+        { jobId: job.id, inputSha: job.inputSha, outcome: 'blocked', summary, changes: [] });
+    }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
