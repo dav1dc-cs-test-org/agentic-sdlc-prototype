@@ -100,5 +100,6 @@
     "preempted": 0,
     "historyComplete": true
   },
-  "feedback": ""
+  "feedback": "",
+  "tasksLinked": true
 }
