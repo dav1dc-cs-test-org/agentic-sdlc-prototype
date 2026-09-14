@@ -92,7 +92,8 @@
     "taskId": "engine-core",
     "feedback": "",
     "attempt": 1,
-    "createdAt": "2026-09-14T17:36:29.411Z"
+    "createdAt": "2026-09-14T17:36:29.411Z",
+    "dispatchedAt": "2026-09-14T17:36:30.429Z"
   },
   "evidence": [],
   "processedEvents": [
