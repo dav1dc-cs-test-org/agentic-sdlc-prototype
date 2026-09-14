@@ -100,13 +100,23 @@ function checks(): void {
   const inputSha = process.env.SDLC_SOURCE_SHA;
   const stage = process.env.SDLC_STAGE;
   if (!['scan', 'validate'].includes(stage ?? '')) throw new Error('Unexpected check stage');
-  const results = JSON.parse(process.env.SDLC_CHECK_RESULTS ?? '{}') as Record<string, { result?: string }>;
+  const results = JSON.parse(process.env.SDLC_CHECK_RESULTS ?? '{}') as Record<string, {
+    result?: string; outputs?: { diagnostics?: string };
+  }>;
   const required = stage === 'scan' ? ['prepare', 'codeql', 'security'] : ['prepare', 'tests'];
   const failed = required.filter(name => results[name]?.result !== 'success');
+  const encoded = failed.includes('codeql') ? results.codeql?.outputs?.diagnostics : undefined;
+  let diagnostics = '';
+  if (typeof encoded === 'string' && encoded.length <= 32_000) {
+    try {
+      const parsed = z.string().min(1).max(6000).safeParse(JSON.parse(encoded));
+      if (parsed.success) diagnostics = `\n\nCodeQL diagnostics (untrusted scanner data):\n${parsed.data}`;
+    } catch { diagnostics = ''; }
+  }
   const url = `https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
   const report = reportSchema.parse({ jobId, inputSha,
     outcome: failed.length ? 'changes_requested' : 'pass',
-    summary: failed.length ? `Required checks failed or did not run: ${failed.join(', ')}. Inspect ${url}.` :
+    summary: failed.length ? `Required checks failed or did not run: ${failed.join(', ')}. Inspect ${url}.${diagnostics}` :
       stage === 'scan' ? 'CodeQL, dependency audit, and secret scanning passed.' :
         'Baseline and candidate test suites passed; candidate coverage meets the fixed thresholds and non-regression requirement.',
     changes: [],

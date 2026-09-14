@@ -67,6 +67,8 @@ jobs:
     if: inputs.stage == 'scan'
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    outputs:
+      diagnostics: ${{ steps.findings.outputs.diagnostics }}
     permissions:
       contents: read
       security-events: write
@@ -96,6 +98,7 @@ jobs:
           output: ${{ runner.temp }}/sarif
           upload: false
       - name: Enforce CodeQL findings policy
+        id: findings
         run: node control/src/validate.ts sarif "$RUNNER_TEMP/sarif"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         if: always()

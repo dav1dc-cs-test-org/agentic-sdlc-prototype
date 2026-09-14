@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { globSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
+import { appendFileSync, globSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
@@ -45,9 +45,14 @@ export function validateSarif(input: unknown): void {
         toolComponent: z.object({ index: z.number().int().nonnegative().optional() }).optional(),
       }).optional(),
       level: z.string().optional(),
+      locations: z.array(z.object({ physicalLocation: z.object({
+        artifactLocation: z.object({ uri: z.string().optional() }).optional(),
+        region: z.object({ startLine: z.number().int().positive().optional() }).optional(),
+      }).optional() })).default([]),
     })).default([]),
   })).min(1) }).parse(input);
   let blocking = 0;
+  const details: string[] = [];
   for (const run of sarif.runs) {
     // Query packs declare their rules in tool.extensions, so the driver alone under-reports severity.
     const declared = new Map([run.tool.driver, ...run.tool.extensions]
@@ -59,10 +64,23 @@ export function validateSarif(input: unknown): void {
       const rule = (result.ruleId === undefined ? undefined : declared.get(result.ruleId)) ??
         (index === undefined ? undefined : owner?.rules[index]);
       const severity = Number(rule?.properties?.['security-severity']);
-      if (result.level === 'error' || !Number.isFinite(severity) || severity >= 7) blocking += 1;
+      if (result.level === 'error' || !Number.isFinite(severity) || severity >= 7) {
+        blocking += 1;
+        if (details.length < 10) {
+          const location = result.locations[0]?.physicalLocation;
+          const identifier = (result.ruleId ?? rule?.id ?? 'unknown rule').replace(/\s+/g, ' ').slice(0, 200);
+          const path = (location?.artifactLocation?.uri ?? 'unknown location').replace(/\s+/g, ' ').slice(0, 300);
+          const line = location?.region?.startLine;
+          details.push(`${identifier} at ${path}${line === undefined ? '' : `:${line}`} ` +
+            `(security severity ${Number.isFinite(severity) ? severity : 'unclassified'})`);
+        }
+      }
     }
   }
-  if (blocking) throw new Error(`CodeQL found ${blocking} blocking or unclassified findings`);
+  if (blocking) {
+    const omitted = blocking > details.length ? `\n${blocking - details.length} additional findings omitted.` : '';
+    throw new Error(`CodeQL found ${blocking} blocking or unclassified findings\n${details.join('\n')}${omitted}`);
+  }
 }
 
 export function validateSecrets(input: unknown): void {
@@ -105,10 +123,18 @@ if (import.meta.main) {
     validateCoverage(before, after, policy);
     console.log(`Coverage passed: lines ${after.total.lines.pct}%, branches ${after.total.branches.pct}%`);
   } else if (command === 'sarif') {
-    const directory = process.argv[3]!;
-    const files = readdirSync(directory).filter(file => file.endsWith('.sarif'));
-    if (!files.length) throw new Error('CodeQL did not produce a SARIF report');
-    for (const file of files) validateSarif(JSON.parse(readFileSync(join(directory, file), 'utf8')));
+    try {
+      const directory = process.argv[3]!;
+      const files = readdirSync(directory).filter(file => file.endsWith('.sarif')).sort();
+      if (!files.length) throw new Error('CodeQL did not produce a SARIF report');
+      for (const file of files) validateSarif(JSON.parse(readFileSync(join(directory, file), 'utf8')));
+    } catch (error) {
+      if (process.env.GITHUB_OUTPUT) {
+        const diagnostics = error instanceof Error ? error.message.slice(0, 6000) : 'CodeQL validation failed';
+        appendFileSync(process.env.GITHUB_OUTPUT, `diagnostics=${JSON.stringify(diagnostics)}\n`);
+      }
+      throw error;
+    }
   } else if (command === 'audit') {
     validateAudit(JSON.parse(readFileSync(process.argv[3]!, 'utf8')));
   } else if (command === 'secrets') {

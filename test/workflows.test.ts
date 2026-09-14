@@ -78,6 +78,12 @@ test('checks cannot pass by silently skipping a required stage', () => {
   assert.equal(workflow.jobs.tests.permissions, undefined);
   assert.equal(JSON.stringify(workflow.jobs.tests).includes('secrets.'), false);
   assert.equal(workflow.jobs.codeql.steps.find((step: { uses?: string }) => step.uses?.includes('/init@')).with['build-mode'], 'none');
+  assert.equal(workflow.jobs.codeql.outputs.diagnostics, '${{ steps.findings.outputs.diagnostics }}');
+  const gate = workflow.jobs.codeql.steps.find((step: { id?: string }) => step.id === 'findings');
+  assert.match(gate.run, /validate\.ts sarif/);
+  assert.equal(gate['continue-on-error'], undefined);
+  const result = workflow.jobs.result.steps.find((step: { env?: Record<string, string> }) => step.env?.SDLC_CHECK_RESULTS);
+  assert.equal(result.env.SDLC_CHECK_RESULTS, '${{ toJSON(needs) }}');
 });
 
 test('manual workflows pin actions to immutable commits and never persist git credentials', () => {

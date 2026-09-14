@@ -102,8 +102,12 @@ This mode requires an organization-owned repository whose organization has a
 Copilot subscription with centralized billing enabled. Confirm the organization's
 Copilot policies permit it before enabling the controller.
 
-If inference fails with `403`, the Actions token has no Copilot access for that
-organization. To fall back, set `permissions.copilot-requests` to `none`,
+If inference fails with `403`, inspect the `agent` artifact and its proxy usage
+before changing credentials. The status alone does not establish missing
+Copilot access, especially after successful requests near the 200-credit cap.
+See [Blocked Scan Repairs](#blocked-scan-repairs). If diagnostics confirm that
+organization inference access is unavailable, a fallback is to set
+`permissions.copilot-requests` to `none`,
 recompile with the pinned compiler, and store `COPILOT_GITHUB_TOKEN` as an
 environment secret here. That fallback needs a fine-grained token owned by a user
 account rather than an organization, with Account permissions then Copilot
@@ -407,3 +411,30 @@ Logs and artifacts are retained according to Actions policy; worker evidence
 artifacts request 14-day retention. Durable state and issue/PR summaries retain
 the links, not perpetual copies of expiring artifacts. Adjust retention for
 your audit needs through a reviewed workflow change.
+
+### Blocked Scan Repairs
+
+1. Read the stored failure and repair feedback, not just the most recent
+  controller conclusion. A successful scheduled controller run can correctly
+  leave an issue blocked after two consecutive worker failures.
+2. For CodeQL, start with the rule, file, line, and severity in the repair
+  feedback. If they are unavailable, inspect the linked scan's validator step
+  and `sdlc-codeql` SARIF artifact. A missing report is not a clean scan. Test
+  files are scanned too, so a newly added test can trigger a repair even when
+  the preceding source-only scan passed. Fix the reported code without
+  suppressing rules or lowering thresholds.
+3. If the repair worker failed without a result, inspect its `agent` and
+  `sdlc-cost` artifacts. Compare recorded inference usage and proxy failures
+  with the per-run cap before changing authentication or billing. The compiler
+  can report HTTP 403 as authentication failure without setting the
+  pre-emption flag. Do not raise limits or repeatedly retry without a diagnosis.
+4. When the cause is resolved under the same approved scope and trusted revision,
+  a writer can post a new standalone `/sdlc retry` comment. This resumes the
+  stored phase with the same feedback, clears consecutive worker failures, and
+  retains job and repair counters. Ordinary comments do not update job feedback,
+  and GitHub's worker rerun button does not create an acceptable replacement.
+5. If the fix changes protected controller code or workflows, deploy it through
+  human review, then use `/sdlc revise <specific findings and recovery scope>`
+  and approve the new plan. The old feature branch remains available for
+  inspection, but the new plan starts from the updated default branch. Retry
+  cannot bypass the trusted-revision check or automatically refresh old feedback.

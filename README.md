@@ -159,6 +159,11 @@ new deterministic scans and a new security-agent review before validation and
 final review. The final PR includes the approved plan, task context, workflow
 evidence, and an advisory `COMMENT` review. `SDLC / Complete` is attached to the
 reviewed commit, not to a mutable branch name.
+Failed CodeQL gates include bounded rule, file, line, and severity diagnostics
+in repair feedback when available, alongside the workflow evidence link. These
+diagnostics are untrusted context, not permission to suppress a finding or pass
+a failed check. See [Blocked Scan Repairs](docs/operations.md#blocked-scan-repairs)
+before retrying a blocked lifecycle.
 Agent-authored plan and evidence text has GitHub closing keywords neutralized
 before publication, so only the controller-authored epic reference can close an
 issue when the PR merges.

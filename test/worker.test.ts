@@ -201,7 +201,7 @@ test('check-result entry point treats skipped, missing, and failed checks as fai
   const directory = mkdtempSync(join(tmpdir(), 'sdlc-check-result-'));
   const script = resolve('src/worker.ts');
   try {
-    const execute = (stage: string, results: Record<string, { result: string }>) => {
+    const execute = (stage: string, results: Record<string, { result: string; outputs?: { diagnostics: string } }>) => {
       execFileSync(process.execPath, [script, 'checks'], { cwd: directory, env: {
         ...process.env, SDLC_JOB: '123-1', SDLC_SOURCE_SHA: 'a'.repeat(40), SDLC_STAGE: stage,
         SDLC_CHECK_RESULTS: JSON.stringify(results), GITHUB_REPOSITORY: 'owner/repo', GITHUB_RUN_ID: '1',
@@ -213,6 +213,23 @@ test('check-result entry point treats skipped, missing, and failed checks as fai
     for (const result of ['skipped', 'failure', 'cancelled']) {
       assert.equal(execute('scan', { ...good, security: { result } }).outcome, 'changes_requested');
     }
+    const diagnostics = 'CodeQL found 1 blocking or unclassified findings\n' +
+      'js/regex/missing-regexp-anchor at test/turtle-graphics/ui.test.ts:93 (security severity 7.8)';
+    const rejected = execute('scan', { ...good, codeql: {
+      result: 'failure', outputs: { diagnostics: JSON.stringify(diagnostics) },
+    } });
+    assert.equal(rejected.outcome, 'changes_requested');
+    assert.ok(rejected.summary.includes(diagnostics));
+    assert.match(rejected.summary, /actions\/runs\/1/);
+    const withoutDiagnostics = execute('scan', { ...good, codeql: { result: 'failure' } });
+    for (const encoded of ['{', JSON.stringify({}), JSON.stringify('x'.repeat(6001)), 'x'.repeat(32_001)]) {
+      assert.deepEqual(execute('scan', { ...good, codeql: {
+        result: 'failure', outputs: { diagnostics: encoded },
+      } }), withoutDiagnostics);
+    }
+    assert.deepEqual(execute('scan', { ...good, codeql: {
+      result: 'success', outputs: { diagnostics: JSON.stringify(diagnostics) },
+    } }), execute('scan', good));
     assert.equal(execute('validate', { prepare: { result: 'success' }, tests: { result: 'success' } }).outcome, 'pass');
     assert.equal(execute('validate', {}).outcome, 'changes_requested');
   } finally { rmSync(directory, { recursive: true, force: true }); }

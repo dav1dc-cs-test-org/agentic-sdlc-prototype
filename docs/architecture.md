@@ -384,13 +384,13 @@ flowchart TD
     end
     GateResult["Separate result job checks required job conclusions"]
     GatePass["Return pass report"]
-    GateFail["Return changes_requested with failed job names"]
+    GateFail["Return changes_requested with failed jobs and available CodeQL diagnostics"]
     GateController["Controller authenticates result and chooses next phase"]
 
     GatePrepare --> GateStage
     GateStage -->|"scan"| GateCodeQL --> GateSarif
     GateStage -->|"scan"| GateAudit -->|"Audit succeeds"| GateSecrets
-    GateSarif --> GateResult
+    GateSarif -->|"Conclusion and any bounded diagnostics"| GateResult
     GateSecrets --> GateResult
     GateAudit -->|"Audit fails; secret step is skipped"| GateResult
     GateStage -->|"validate"| GateInstall --> GateBaseline
@@ -422,6 +422,16 @@ The current checks include:
   c8, using test and source patterns from policy.
 - **Coverage:** at least 80% lines and 70% branches, with no permitted drop from
   the baseline. Missing tests or invalid coverage data fail validation.
+
+On SARIF validation failure, the validator emits JSON-encoded diagnostics through
+a job output. Blocking findings include at most ten rule IDs, source locations,
+and severities, with bounded metadata fields and no source snippets. The result
+job carries at most 6000 characters into repair feedback, labeled as untrusted
+scanner data, only when CodeQL did not succeed. Missing, malformed, or oversized
+diagnostics fall back to the failed job names and run link; they cannot turn a
+failed check into a pass. The full SARIF remains in the `sdlc-codeql` artifact.
+Registered job, approved plan, trusted revision, and source-commit checks remain
+unchanged.
 
 The security and final review agents assess the complete integrated diff and
 available evidence. They are advisory assessments with limited tool access,
@@ -468,7 +478,7 @@ flowchart TD
     RecoveryActive -->|"Explicit blocked report or total job limit"| RecoveryBlocked
     RecoveryActive -->|"Issue or trusted revision changed"| RecoveryBlocked
     RecoveryBlocked -->|"Writer retries after resolving cause"| RecoveryRetry
-    RecoveryBlocked -->|"Changed scope needs revision"| RecoveryRevise
+    RecoveryBlocked -->|"Scope or trusted revision changed"| RecoveryRevise
     RecoveryPaused -->|"Authorized revision command"| RecoveryRevise
     RecoveryActive -->|"Authorized revision command"| RecoveryRevise
     RecoveryRevise --> RecoveryResearch --> RecoveryActive
@@ -684,8 +694,11 @@ The post-step reads the compiler's `parse-mcp-gateway` outputs, where
 inference. That distinguishes a run that finished near the cap from one the
 limiter actually interrupted, whose result may be incomplete. Because the cap is
 applied between inferences rather than mid-request, a pre-empted run can finish
-slightly above it, so the count of pre-emptions is the reliable signal and the
-credit total alone is not.
+slightly above it. A true pre-emption flag confirms the compiler detected the
+limit, but a false flag does not rule out a budget refusal reported instead as an
+authentication error. Inspect the archived proxy usage and error records when a
+worker returns HTTP 403 after successful inference near the cap; neither that
+status code nor the credit total alone establishes the cause.
 
 ### Retention and Limits
 
