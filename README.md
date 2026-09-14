@@ -183,7 +183,8 @@ issue when the PR merges.
  protections in the trusted policy through a human-controlled change.
 - Text changes only, with bounded file count and bytes. No binaries, symlinks,
  submodules, cross-repository tasks, parallel integration, or automatic rebase.
-- A changed default branch requires replanning against the new revision.
+- Default-branch movement that touches a protected path requires replanning
+  against the new revision. Movement elsewhere is adopted between jobs.
  Oversized or ambiguous work stops for intervention instead of expanding scope.
 - Security scans are full candidate scans. Existing blocking vulnerabilities
  also prevent publication. CodeQL SARIF is retained as an artifact; it is not
@@ -193,6 +194,9 @@ issue when the PR merges.
  establish those service-side permissions or entitlements.
 
 ## References
+
+- [Experiment observations](docs/experiment-observations.md): measured learnings,
+  risks, and unverified assumptions from the runs so far.
 
 - [GitHub Agentic Workflows](https://docs.github.com/en/copilot/concepts/agents/about-github-agentic-workflows)
 - [Agentic Workflow security](https://github.github.io/gh-aw/introduction/architecture/)
