@@ -6,7 +6,7 @@
   "phase": "coding",
   "baseSha": "e56d03fc01ef321280fd8c07b527ecb7c9cb33c8",
   "headSha": "86162d1cfaa2d6b6c33623d989ee7c5032bc7cc9",
-  "controlSha": "e56d03fc01ef321280fd8c07b527ecb7c9cb33c8",
+  "controlSha": "1a7ef74fb1ee30f0160536b39155cb3fe27851e9",
   "baseBranch": "main",
   "branch": "agentic/epic-19-v2",
   "plan": {
