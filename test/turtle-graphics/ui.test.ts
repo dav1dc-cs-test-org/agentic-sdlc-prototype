@@ -108,7 +108,19 @@ test('no external script, font, or analytics resources are referenced', () => {
       `reference "${ref}" must be a same-origin relative asset`,
     );
   }
-  assert.doesNotMatch(script, /https?:\/\/(?!www\.w3\.org\/2000\/svg)/, 'no external network calls beyond the inert SVG namespace URI');
+  // Enumerate every http(s) URL literal in the script and require each one to be
+  // an exact match for the inert SVG namespace URI. A negative-lookahead prefix
+  // check (e.g. `https?:\/\/(?!www\.w3\.org\/2000\/svg)`) is not anchored to the
+  // end of the URL, so a crafted value such as
+  // "https://www.w3.org/2000/svg.evil.example" would satisfy the lookahead
+  // (CodeQL js/regex/missing-regexp-anchor) while still pointing at an external
+  // host. Matching the full URL token and comparing it for strict equality
+  // closes that gap.
+  const ALLOWED_SVG_NAMESPACE_URI = 'http://www.w3.org/2000/svg';
+  const urlLiterals = [...script.matchAll(/https?:\/\/[^\s'"`]*/g)].map(m => m[0]);
+  for (const url of urlLiterals) {
+    assert.equal(url, ALLOWED_SVG_NAMESPACE_URI, `unexpected external URL "${url}" referenced in script`);
+  }
   assert.doesNotMatch(script, /\bfetch\s*\(|XMLHttpRequest/);
 });
 
