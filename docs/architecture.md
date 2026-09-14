@@ -744,6 +744,14 @@ retried collection cannot double count. Rejected, failed, and superseded runs ar
 included: the point is what a feature actually cost, not what its accepted work
 cost. Unlike evidence, `spend` survives a change of head commit.
 
+At PR creation, the publisher includes the controller's configured `SDLC_MODEL`
+and resolved `SDLC_AIC_CREDIT_LIMIT` in the Cost section, with defaults of `auto`
+and `250`. These are a publication-time configuration snapshot, not per-run
+history or a resolved inference-model identity. The cap applies separately to
+each inference job, not each turn. Existing PR descriptions are left unchanged
+on publication retries, even if repository variables have since changed.
+This reporting metadata adds no fields to persisted lifecycle state.
+
 New lifecycles and migrated version-1 cost ledgers have
 `spend.historyComplete: true`. A version-1 record without `spend` starts with
 zero recorded-run counters and `historyComplete: false`: earlier costs are

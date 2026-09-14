@@ -581,7 +581,9 @@ test('final PR, advisory review, and commit check are idempotent and reference t
     throw new Error(`Unexpected request: ${method} ${path}`);
   }));
   assert.equal(await github.publish(state), 126);
-  assert.equal(await github.publish(state), 126);
+  const changedConfiguration = new GitHub('owner/repo', { ...policy, maxJobCredits: 575 },
+    'sdlc[bot]', github.api, 'later-model');
+  assert.equal(await changedConfiguration.publish(state), 126);
   assert.equal(pulls.length, 1);
   assert.equal(pulls[0]!.head, state.branch);
   assert.equal(pulls[0]!.base, 'main');
@@ -590,6 +592,14 @@ test('final PR, advisory review, and commit check are idempotent and reference t
   assert.match(String(pulls[0]!.body), /Fixes issue #455/);
   assert.match(String(pulls[0]!.body), /Closes issue owner\/repo#456/);
   assert.doesNotMatch(String(pulls[0]!.body), /earlier costs unavailable/);
+  const cost = String(pulls[0]!.body).split('## Cost\n\n')[1]!.split('\n\n## Evidence')[0]!;
+  assert.deepEqual(JSON.parse(/```json\n([\s\S]*?)\n```/.exec(cost)![1]!), {
+    SDLC_MODEL: 'auto', SDLC_AIC_CREDIT_LIMIT: 250,
+  });
+  assert.match(cost, /Configuration at PR creation/);
+  assert.match(cost, /not a resolved per-run model/);
+  assert.match(cost, /each inference job, not each turn/);
+  assert.match(cost, /earlier runs may have used different settings/);
   assert.equal(reviews.length, 1);
   assert.equal(reviews[0]!.event, 'COMMENT');
   assert.equal(reviews[0]!.commit_id, newSha);
@@ -604,7 +614,7 @@ test('new PRs distinguish partial cost totals from the full lifecycle cost', asy
   const state = publishable();
   state.spend = { runs: 2, runnerMs: 120_000, credits: 12.5, nearLimit: 0, preempted: 0, historyComplete: false };
   let description = '';
-  const github = new GitHub('owner/repo', policy, 'sdlc[bot]', api((method, path, body) => {
+  const github = new GitHub('owner/repo', { ...policy, maxJobCredits: 575 }, 'sdlc[bot]', api((method, path, body) => {
     if (path.includes('/git/ref/')) return { object: { sha: newSha } };
     if (path.endsWith('/issues/123')) return { title: 'Feature', body: 'Request', user: { login: 'requester' }, state: 'open', labels: [] };
     if (path.endsWith('/pulls')) {
@@ -615,10 +625,21 @@ test('new PRs distinguish partial cost totals from the full lifecycle cost', asy
     if (path.endsWith('/reviews')) return method === 'GET' ? [] : { id: 1 };
     if (path.endsWith('/check-runs')) return method === 'GET' ? { total_count: 0, check_runs: [] } : { id: 1 };
     throw new Error(`Unexpected request: ${method} ${path}`);
-  }));
+  }), 'custom-model');
   await github.publish(state);
   assert.match(description, /earlier costs unavailable\. Totals cover recorded runs only/);
   assert.match(description, /2\.0 runner minutes and 12\.5 AI credits across 2 runs/);
+  const cost = description.split('## Cost\n\n')[1]!.split('\n\n## Evidence')[0]!;
+  assert.deepEqual(JSON.parse(/```json\n([\s\S]*?)\n```/.exec(cost)![1]!), {
+    SDLC_MODEL: 'custom-model', SDLC_AIC_CREDIT_LIMIT: 575,
+  });
+});
+
+test('the reporting model defaults to auto when unset or empty', () => {
+  const client = api(() => { throw new Error('No API request expected'); });
+  for (const model of [undefined, '']) {
+    assert.equal(new GitHub('owner/repo', policy, 'sdlc[bot]', client, model).model, 'auto');
+  }
 });
 
 test('state reads validate identity and reject corrupt or oversized data', async () => {

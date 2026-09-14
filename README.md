@@ -186,6 +186,11 @@ new deterministic scans and a new security-agent review before validation and
 final review. The final PR includes the approved plan, task context, workflow
 evidence, and an advisory `COMMENT` review. `SDLC / Complete` is attached to the
 reviewed commit, not to a mutable branch name.
+The PR's Cost section also records `SDLC_MODEL` and `SDLC_AIC_CREDIT_LIMIT` as
+configured at PR creation, defaulting to `auto` and `250`. These are not a
+per-run settings history: `auto` is a model selector, and the cap applies to
+each inference job rather than each turn. Existing PR descriptions are not
+rewritten when the configuration changes.
 Failed CodeQL gates include bounded rule, file, line, and severity diagnostics
 in repair feedback when available, alongside the workflow evidence link. These
 diagnostics are untrusted context, not permission to suppress a finding or pass

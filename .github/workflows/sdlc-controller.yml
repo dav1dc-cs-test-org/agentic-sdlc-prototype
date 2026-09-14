@@ -70,4 +70,5 @@ jobs:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           SDLC_BOT_LOGIN: ${{ steps.app.outputs.app-slug }}[bot]
           SDLC_ISSUE: ${{ inputs.issue }}
+          SDLC_MODEL: ${{ vars.SDLC_MODEL || 'auto' }}
           SDLC_AIC_CREDIT_LIMIT: ${{ vars.SDLC_AIC_CREDIT_LIMIT || '250' }}

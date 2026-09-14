@@ -115,6 +115,18 @@ default; it is not the effective inference limit. Use the explicit
 "Per-inference-job credit limit" step summary, the receipt's `creditLimit`,
 and the archived firewall configuration when investigating budget errors.
 
+### Final PR Cost
+
+New feature PRs include the controller's resolved `SDLC_MODEL` and
+`SDLC_AIC_CREDIT_LIMIT` settings in the Cost section, alongside existing cost
+totals and warnings. Unset or empty settings appear as `auto` and `250`.
+The values are labeled as configuration at PR creation, not settings measured
+for every earlier run. In particular, `auto` does not identify the concrete
+model chosen by the inference service. The credit limit is per inference job,
+not per model turn. Publication retries reuse the existing PR without rewriting
+its configuration snapshot. No additional repository variables or permissions
+are required.
+
 ## 2. Configure Environments
 
 Create both environments before enabling the controller. Limit deployment

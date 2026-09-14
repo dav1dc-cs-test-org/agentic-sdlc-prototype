@@ -73,6 +73,8 @@ test('agents use the repository model with an auto fallback for inference and me
     assert.ok(modelSteps.length > 0, `${job} must explicitly select its model`);
     for (const step of modelSteps) assert.equal(step.env?.[variable], model);
   }
+  const controller = read('sdlc-controller.yml').jobs.reconcile.steps.find((step: { run?: string }) => step.run === 'node src/main.ts');
+  assert.equal(controller.env.SDLC_MODEL, model);
 });
 
 test('checks cannot pass by silently skipping a required stage', () => {

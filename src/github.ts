@@ -47,17 +47,19 @@ export class GitHub implements Platform {
   readonly scope: { owner: string; repo: string };
   readonly policy: Policy;
   readonly botLogin: string;
+  readonly model: string;
   // Reconciliation reads the same lists repeatedly; caches live only for the duration of one process.
   private readonly commentCache = new Map<number, Awaited<ReturnType<GitHub['fetchComments']>>>();
   private botIssues?: Awaited<ReturnType<GitHub['fetchBotIssues']>>;
 
-  constructor(repository: string, policy: Policy, botLogin: string, api: Octokit) {
+  constructor(repository: string, policy: Policy, botLogin: string, api: Octokit, model = 'auto') {
     const match = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(repository);
     if (!match || !/^[a-z0-9-]+\[bot\]$/.test(botLogin)) throw new Error('Invalid repository or App bot identity');
     this.scope = { owner: match[1]!, repo: match[2]! };
     this.policy = policy;
     this.botLogin = botLogin;
     this.api = api;
+    this.model = model || 'auto';
   }
 
   async issue(number: number): Promise<Issue> {
@@ -385,11 +387,18 @@ export class GitHub implements Platform {
       `- **${item.stage}**: ${neutralizeClosingKeywords(item.summary)}\n  ` +
       `[Run ${item.runId}](https://github.com/${this.scope.owner}/${this.scope.repo}/actions/runs/${item.runId})`).join('\n');
     if (!pullNumber) {
+      const configuration = neutralizeClosingKeywords(JSON.stringify({
+        SDLC_MODEL: this.model,
+        SDLC_AIC_CREDIT_LIMIT: this.policy.maxJobCredits,
+      }, null, 2));
       pullNumber = (await this.api.pulls.create({ ...this.scope, head: state.branch, base: state.baseBranch, draft: false,
         title: `[Agentic SDLC] ${(await this.issue(state.issueNumber)).title}`.slice(0, 200),
         body: `${marker}\nCloses #${state.issueNumber}\n\n## Approved plan\n\n${neutralizeClosingKeywords(state.plan!.body)}\n\n` +
           `Approved by @${state.approval!.actor}. Plan hash: \`${state.plan!.hash}\`.\n\n` +
           `Reviewed commit: \`${state.headSha}\`.\n\n## Cost\n\n` +
+          `Configuration at PR creation:\n\n\`\`\`json\n${configuration}\n\`\`\`\n\n` +
+          'The model setting is a configured selector, not a resolved per-run model. ' +
+          'The credit limit applies separately to each inference job, not each turn; earlier runs may have used different settings.\n\n' +
           (state.spend.historyComplete ? '' :
             '**Partial cost history:** earlier costs unavailable. Totals cover recorded runs only.\n\n') +
           `${(state.spend.runnerMs / 60_000).toFixed(1)} runner minutes and ` +
