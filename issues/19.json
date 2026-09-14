@@ -95,7 +95,8 @@
     "attempt": 1,
     "createdAt": "2026-09-14T18:56:38.578Z",
     "dispatchedAt": "2026-09-14T18:56:40.295Z",
-    "runId": 34883877951
+    "runId": 34883877951,
+    "costedRun": 34883877951
   },
   "evidence": [
     {
@@ -122,9 +123,9 @@
   "repairs": 2,
   "failures": 0,
   "spend": {
-    "runs": 27,
-    "runnerMs": 10023000,
-    "credits": 1518.5405099999996,
+    "runs": 28,
+    "runnerMs": 10317000,
+    "credits": 1552.1898399999995,
     "nearLimit": 3,
     "preempted": 0,
     "historyComplete": true
