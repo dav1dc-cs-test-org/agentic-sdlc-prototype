@@ -84,6 +84,17 @@
   ],
   "tasksLinked": true,
   "retiredTasks": [],
+  "job": {
+    "id": "19-28",
+    "stage": "security",
+    "inputSha": "6c454e1b225dc5976271ba692f2918730d714a64",
+    "controlSha": "8f1a06648fd2f19d560776c04eebf03dfefa7b07",
+    "planHash": "c24254a7d363b5623276dcd4cf792e887eeee2ed574abc40de848456425a3cd3",
+    "taskId": null,
+    "feedback": "",
+    "attempt": 1,
+    "createdAt": "2026-09-14T18:56:38.578Z"
+  },
   "evidence": [
     {
       "stage": "test",
@@ -105,7 +116,7 @@
     "comment:5666798822",
     "comment:5667990515"
   ],
-  "sequence": 27,
+  "sequence": 28,
   "repairs": 2,
   "failures": 0,
   "spend": {
