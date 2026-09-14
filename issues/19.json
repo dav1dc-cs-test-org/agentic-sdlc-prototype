@@ -83,13 +83,24 @@
     }
   ],
   "retiredTasks": [],
+  "job": {
+    "id": "19-14",
+    "stage": "code",
+    "inputSha": "e56d03fc01ef321280fd8c07b527ecb7c9cb33c8",
+    "controlSha": "e56d03fc01ef321280fd8c07b527ecb7c9cb33c8",
+    "planHash": "c24254a7d363b5623276dcd4cf792e887eeee2ed574abc40de848456425a3cd3",
+    "taskId": "engine-core",
+    "feedback": "",
+    "attempt": 1,
+    "createdAt": "2026-09-14T17:36:29.411Z"
+  },
   "evidence": [],
   "processedEvents": [
     "comment:5642435724",
     "comment:5666798822",
     "comment:5667990515"
   ],
-  "sequence": 13,
+  "sequence": 14,
   "repairs": 1,
   "failures": 0,
   "spend": {
