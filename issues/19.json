@@ -39,8 +39,8 @@
         "npm run verify passes, including tsc --noEmit and coverage thresholds (80% lines / 70% branches) with no drop from baseline"
       ],
       "dependsOn": [],
-      "completed": false,
-      "issueNumber": 23
+      "issueNumber": 23,
+      "completed": false
     },
     {
       "id": "browser-ui",
@@ -60,8 +60,8 @@
       "dependsOn": [
         "engine-core"
       ],
-      "completed": false,
-      "issueNumber": 24
+      "issueNumber": 24,
+      "completed": false
     },
     {
       "id": "responsive-styling",
@@ -78,10 +78,11 @@
       "dependsOn": [
         "browser-ui"
       ],
-      "completed": false,
-      "issueNumber": 25
+      "issueNumber": 25,
+      "completed": false
     }
   ],
+  "tasksLinked": true,
   "retiredTasks": [],
   "job": {
     "id": "19-14",
@@ -93,7 +94,8 @@
     "feedback": "",
     "attempt": 1,
     "createdAt": "2026-09-14T17:36:29.411Z",
-    "dispatchedAt": "2026-09-14T17:36:30.429Z"
+    "dispatchedAt": "2026-09-14T17:36:30.429Z",
+    "runId": 34875786024
   },
   "evidence": [],
   "processedEvents": [
@@ -112,6 +114,5 @@
     "preempted": 0,
     "historyComplete": true
   },
-  "feedback": "",
-  "tasksLinked": true
+  "feedback": ""
 }
