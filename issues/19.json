@@ -78,7 +78,8 @@
       "dependsOn": [
         "browser-ui"
       ],
-      "completed": false
+      "completed": false,
+      "issueNumber": 25
     }
   ],
   "retiredTasks": [],
