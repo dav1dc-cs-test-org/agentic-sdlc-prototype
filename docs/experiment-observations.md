@@ -135,7 +135,8 @@ unwinnable loop: the agent is blocked by something it has no permission to fix,
 and burns repair budget discovering that.
 
 This was observed, not theorised. Two baseline findings blocked every agent run
-until a human fixed them directly on the default branch.
+until a human fixed them directly on the default branch. The structural cause is
+self-hosting; see [Packaging](#packaging).
 
 ### Cost accounting depends on a compiler internal
 
@@ -155,6 +156,36 @@ accounting, or the detection did not fire. **The positive path has never been
 observed in production.** Until a run is deliberately forced over a lowered cap
 and the flag is seen to flip, this metric should not be trusted.
 
+### Pre-emption is measured but never acted upon
+
+`spend.preempted` reaches the issue status comment and the pull request body and
+gates nothing. No control flow reads it.
+
+When the limiter stops a run, three things can happen to its output. Two are
+already safe: if no `result.json` was written the upload fails and the controller
+counts an infrastructure failure, and if the file is truncated the schema
+rejects it. The third is not. A structurally valid result that reports `pass`
+while describing work the agent was interrupted part-way through is **accepted
+normally** — the phase advances, evidence is recorded against the head commit,
+and the lifecycle proceeds toward publication.
+
+That third case is also the most likely one, because the cap is applied between
+inferences rather than mid-request. The agent is stopped at a boundary where it
+has probably already written a well-formed file.
+
+The consequence is that a feature can reach a pull request carrying work that was
+silently cut short, and the only trace is a number in the PR body that nothing
+obliges a reviewer to read.
+
+The cheapest mitigation is to treat a pre-empted run as not-pass regardless of
+the outcome it reports. Pre-emption is the one case where the harness knows more
+about completeness than the agent does: the agent cannot know which inference it
+was denied.
+
+That change should wait on the validation gap above. Gating a lifecycle on a
+signal that has never been observed to fire would risk blocking every run on a
+flag stuck at the wrong value. Force the flag first, then gate on it.
+
 ### Human bypass weakens what the experiment demonstrates
 
 The default-branch ruleset requires pull requests, `CI / Verify`, and review, but
@@ -169,6 +200,64 @@ Single repository. Node.js and TypeScript only. Sequential execution within a
 lifecycle. Public repository, so anyone may open an issue and any comment
 triggers a controller run — authorisation is enforced, but the compute is not
 gated.
+
+## Packaging
+
+The controller develops features in the repository that contains the controller,
+so the candidate checkout includes the harness. Three consequences have all been
+observed rather than predicted:
+
+1. Defects in controller code are reported as feature-gate failures. A finding in
+   `worker.ts` blocked work on a clock-face renderer that could not possibly have
+   caused it.
+2. Agents cannot clear those findings, because the files are protected. The loop
+   is unwinnable, and the budget is spent discovering that rather than fixing
+   anything.
+3. Coverage baselines and the `sourcePaths` and `testPaths` policy describe the
+   controller rather than an application, so an adopting repository inherits
+   settings written for something else.
+
+The sharpest form of the problem is an asymmetry in where scanning happens.
+CodeQL runs **only** in the candidate context, where nobody is permitted to act on
+harness findings, and **never** in `CI / Verify`, where a human could. Controller
+code is therefore scanned at exactly the moment it cannot be fixed.
+
+### Options
+
+**Scope the candidate scan to what the candidate can change.** Agents cannot
+modify protected paths, so findings there carry no information about the work
+being assessed. Moving harness scanning into CI would raise its coverage from
+none to complete while removing noise from the feature gate. The honest cost is
+that a harness vulnerability would no longer block feature publication — though
+today it does not meaningfully block it either, it merely stalls the lifecycle
+until a human intervenes.
+
+**Block only on new findings.** Diff the candidate SARIF against a scan of
+`baseSha` and fail on findings the candidate introduced. This addresses the
+general class, including pre-existing debt in ordinary application code, not just
+the harness. It costs a second CodeQL run per validation and requires stable
+fingerprint matching across commits.
+
+**Move the controller out of the candidate tree.** The runtime already models
+this separation: every worker checks out `control` at the trusted revision and
+`source` at the candidate commit as two independent directories. Only the
+repository layout conflates them. Publishing the controller as a versioned
+package or reusable workflow would make the trust boundary a version pin rather
+than a path glob, remove harness code from the candidate scan entirely, and let
+coverage thresholds and path policy describe the application being built.
+
+### The tension worth preserving
+
+Self-hosting is what surfaced the time-of-check-to-time-of-use defect in the
+first place. Had the controller been an installed dependency, nothing in this
+experiment would have scanned it. Any packaged form needs its own pipeline with
+its own gates, or that class of defect simply stops being examined.
+
+The ordering that follows from the evidence is: scan the harness in CI now,
+because it is currently unscanned where it can be fixed; adopt new-findings-only
+diffing next, because it solves the general case; and treat extraction into a
+package as the eventual shape rather than an immediate step, since the runtime
+already separates the two and the repository layout is the last thing to catch up.
 
 ## Assumptions
 
