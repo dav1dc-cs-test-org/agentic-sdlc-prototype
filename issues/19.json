@@ -16,6 +16,19 @@
   },
   "tasks": [],
   "retiredTasks": [],
+  "job": {
+    "id": "19-12",
+    "stage": "research",
+    "inputSha": "e56d03fc01ef321280fd8c07b527ecb7c9cb33c8",
+    "controlSha": "e56d03fc01ef321280fd8c07b527ecb7c9cb33c8",
+    "planHash": "8ff368d6f83c3b18548b7127d79542532a6d306137c753d59f733fda8d24387f",
+    "taskId": null,
+    "feedback": "Keep the turtle-graphics scope. Use v1 as reference and fix the UI test's CodeQL finding by validating extracted URLs exactly, without weakening checks.",
+    "attempt": 1,
+    "createdAt": "2026-09-14T15:56:28.139Z",
+    "dispatchedAt": "2026-09-14T15:56:29.888Z",
+    "runId": 34865443598
+  },
   "evidence": [],
   "processedEvents": [
     "comment:5642435724",
@@ -32,17 +45,5 @@
     "preempted": 0,
     "historyComplete": true
   },
-  "feedback": "Keep the turtle-graphics scope. Use v1 as reference and fix the UI test's CodeQL finding by validating extracted URLs exactly, without weakening checks.",
-  "job": {
-    "id": "19-12",
-    "stage": "research",
-    "inputSha": "e56d03fc01ef321280fd8c07b527ecb7c9cb33c8",
-    "controlSha": "e56d03fc01ef321280fd8c07b527ecb7c9cb33c8",
-    "planHash": "8ff368d6f83c3b18548b7127d79542532a6d306137c753d59f733fda8d24387f",
-    "taskId": null,
-    "feedback": "Keep the turtle-graphics scope. Use v1 as reference and fix the UI test's CodeQL finding by validating extracted URLs exactly, without weakening checks.",
-    "attempt": 1,
-    "createdAt": "2026-09-14T15:56:28.139Z",
-    "dispatchedAt": "2026-09-14T15:56:29.888Z"
-  }
+  "feedback": "Keep the turtle-graphics scope. Use v1 as reference and fix the UI test's CodeQL finding by validating extracted URLs exactly, without weakening checks."
 }
