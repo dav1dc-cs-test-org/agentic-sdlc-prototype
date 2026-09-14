@@ -39,7 +39,8 @@
         "npm run verify passes, including tsc --noEmit and coverage thresholds (80% lines / 70% branches) with no drop from baseline"
       ],
       "dependsOn": [],
-      "completed": false
+      "completed": false,
+      "issueNumber": 23
     },
     {
       "id": "browser-ui",
