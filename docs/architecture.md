@@ -49,8 +49,8 @@ flowchart TD
         ArchContext["Repository and allowlisted documentation"]
     end
     subgraph ArchRecords["GitHub records and outputs"]
-        ArchState[("Protected sdlc-state branch")]
-        ArchArtifacts[("Actions result and evidence artifacts")]
+        ArchState[("Protected sdlc-state and pending costs")]
+        ArchArtifacts[("Actions result, evidence, and cost artifacts")]
         ArchBranch[("Versioned feature branch")]
         ArchTasks["Native sub-issues and dependencies"]
         ArchPR["Final PR, advisory review, completion check"]
@@ -159,7 +159,7 @@ flowchart TD
     ProcRepair["Record findings and increment repair counter"]
     ProcBlocked["blocked: human intervention required"]
     ProcPublish["publishing: enforce final publication conditions"]
-    ProcPR["pr_open: final PR, review comment, commit check"]
+    ProcPR["pr_open: final PR, cost snapshot, review and check"]
     ProcHuman["Normal PR CI, configured rules, human review"]
     ProcMerged["merged: reconcile and close child tasks"]
     ProcCancelled["cancelled: PR closed without merge"]
@@ -218,6 +218,8 @@ Important details behind the diagram:
    on merge to its default branch, and reconciliation closes child tasks.
 6. Invalid output, missing artifacts, pauses, and scope drift follow the
    separate [Recovery Flow](#recovery-flow), not an unconditional success edge.
+7. Pending cost reconciliation is independent of these phases. It may continue
+  after cancellation or merge but never authorizes a worker result or new work.
 
 ## Approval Conversation
 
@@ -247,7 +249,10 @@ sequenceDiagram
     alt Human requests a different approach
     ApHuman->>ApIssue: New /sdlc revise feedback comment
     ApIssue-)ApControl: New comment event
-    ApControl->>ApState: Clear approval and active job, snapshot new scope
+    ApControl->>ApState: Retain unsettled cost identity, clear approval and active job, snapshot scope
+      opt Superseded worker is still running
+    ApControl-)ApWorker: Request cancellation without accepting old results
+      end
     ApControl->>ApIssue: Retire superseded task issues
     ApControl-)ApWorker: Dispatch revised research
     ApWorker-->>ApControl: New plan proposal through artifact and event
@@ -278,7 +283,8 @@ from a later schedule or manual reconciliation. If the issue changes after that
 event, the event snapshot remains authoritative and execution blocks before a
 worker is dispatched. A revision snapshots the current issue and default branch, invalidates the
 active job, clears approval and evidence, retires existing tasks as not planned,
-and chooses a new versioned feature branch. Older branches are retained.
+and chooses a new versioned feature branch. Older branches and unsettled cost
+identities are retained; accounting uses their original commit and plan bindings.
 An edited issue requires replanning before execution can continue, as does any
 default-branch movement that touches a protected path. Movement outside those
 paths is adopted between jobs instead of blocking. `/sdlc retry` does not
@@ -308,6 +314,12 @@ sequenceDiagram
     HwControl->>HwState: Persist version 2 using the original file SHA
     HwState-->>HwControl: Updated state-file SHA
     end
+    opt Pending accounting from previous jobs
+    HwControl->>HwActions: Find retained job using its original identity and bound run ID
+    HwControl->>HwArtifacts: Read costs only when the run has completed
+    HwControl->>HwState: Settle once or retain until the fixed collection deadline
+    Note over HwControl,HwState: Accounting never reads or accepts old worker results
+    end
   HwControl->>HwState: Persist job, source SHA, control SHA, and plan hash
   HwState-->>HwControl: Updated state-file version
   HwControl->>HwState: Persist dispatch timestamp
@@ -332,13 +344,28 @@ sequenceDiagram
   HwActions-->>HwControl: Matching first-attempt run metadata
   HwControl->>HwState: Bind run ID to active job
   HwControl->>HwArtifacts: Read job durations and sdlc-cost
+    break Cost retrieval or receipt validation throws
+        alt Retryable error within the job timeout
+      HwControl->>HwControl: Retain registered job for a later reconciliation
+        else Receipt rejected or retrieval deadline exceeded
+      HwControl->>HwState: Mark incomplete cost history and consume a bounded failure
+      HwControl->>HwIssue: Show cost error, job identity, and run link in status
+        end
+    end
     opt Failed workflow or unavailable or pre-empted telemetry
         opt Failed Security workflow
       HwControl->>HwArtifacts: Read and validate checkpoint for diagnostics only
         end
     HwControl->>HwIssue: Publish idempotent attempt diagnostics
     end
-  HwControl->>HwState: Charge the run once, accepted or not
+    alt Complete measured receipt
+    HwControl->>HwState: Charge once and finalize cost marker, accepted or not
+    else Incomplete telemetry within collection window
+    HwControl->>HwState: Retain identity, observed values, and fixed deadline without charging
+    else Incomplete telemetry past collection deadline
+    HwControl->>HwIssue: Report unavailable telemetry and stop collection
+    HwControl->>HwState: Charge observed values once and mark incomplete history
+    end
     alt Workflow permits result acceptance
     HwControl->>HwArtifacts: Download exactly one eligible result artifact
     HwArtifacts-->>HwControl: Untrusted result JSON
@@ -349,7 +376,7 @@ sequenceDiagram
         HwBranch-->>HwControl: Accepted commit SHA
         HwControl->>HwControl: Invalidate older evidence
             end
-        HwControl->>HwState: Record stage result and next phase
+        HwControl->>HwState: Record stage result and next phase, retaining unresolved costs
         else Accepted changes_requested result
         HwControl->>HwState: Store findings and bounded repair transition
         else Blocked result or invalid output
@@ -513,7 +540,7 @@ for that issue without changing its lifecycle phase.
 ```mermaid
 flowchart TD
     RecoveryActive["Active lifecycle"]
-    RecoveryInvalidate["Persist interruption and clear active job"]
+    RecoveryInvalidate["Retain unsettled cost identity and clear active job atomically"]
     RecoveryPaused["paused"]
     RecoveryCancelled["cancelled: no automatic restart"]
     RecoveryFailure["Increment consecutive infrastructure failures"]
@@ -521,15 +548,27 @@ flowchart TD
     RecoveryFindings["Clear evidence and increment repair counter"]
     RecoveryCode["coding: apply repair feedback"]
     RecoveryBlocked["blocked: inspect cause and evidence"]
-    RecoveryRevise["Snapshot scope and retire superseded tasks"]
+    RecoveryRevise["Retain unsettled costs, snapshot scope and retire tasks"]
     RecoveryResearch["researching: new plan requires approval"]
+    RecoveryAccounting["Reconcile pending costs in every phase"]
+    RecoverySettled["Settle once without accepting old results"]
+    RecoveryPartial["Record observed values and warn of incomplete history"]
 
     RecoveryActive -->|"Pause or cancel request"| RecoveryInvalidate
     RecoveryActive -->|"Issue closed or intake label removed"| RecoveryInvalidate
     RecoveryInvalidate -->|"Pause"| RecoveryPaused
     RecoveryInvalidate -->|"Cancel"| RecoveryCancelled
+    RecoveryInvalidate -->|"Replan needed"| RecoveryBlocked
+    RecoveryInvalidate -.->|"Unsettled job only"| RecoveryAccounting
+    RecoveryRevise -.->|"Unsettled job only"| RecoveryAccounting
+    RecoveryFailure -.->|"Unsettled job only"| RecoveryAccounting
+    RecoveryActive -.->|"Incomplete telemetry"| RecoveryAccounting
+    RecoveryAccounting -->|"Complete receipt"| RecoverySettled
+    RecoveryAccounting -->|"Deadline or permanent retrieval error"| RecoveryPartial
+    RecoveryAccounting -->|"Unavailable within collection window"| RecoveryAccounting
     RecoveryPaused -->|"Writer resumes"| RecoveryRetry
     RecoveryActive -->|"Failed worker or invalid result"| RecoveryFailure
+    RecoveryActive -->|"Cost receipt rejected or retrieval deadline exceeded"| RecoveryFailure
     RecoveryFailure -->|"Failure budget remains"| RecoveryRetry
     RecoveryFailure -->|"Failure budget exhausted"| RecoveryBlocked
     RecoveryRetry --> RecoveryActive
@@ -538,7 +577,7 @@ flowchart TD
     RecoveryFindings -->|"Repair budget exhausted"| RecoveryBlocked
     RecoveryCode --> RecoveryActive
     RecoveryActive -->|"Explicit blocked report or total job limit"| RecoveryBlocked
-    RecoveryActive -->|"Issue or trusted revision changed"| RecoveryBlocked
+    RecoveryActive -->|"Issue or trusted revision changed"| RecoveryInvalidate
     RecoveryBlocked -->|"Writer retries after resolving cause"| RecoveryRetry
     RecoveryBlocked -->|"Scope or trusted revision changed"| RecoveryRevise
     RecoveryPaused -->|"Authorized revision command"| RecoveryRevise
@@ -564,14 +603,29 @@ flowchart TD
   `5xx` responses, plus an empty result-artifact listing, retain the completed
   registered job for retry until its job timeout. Persistent retrieval failure
   then consumes one infrastructure failure.
+- **Active-job cost retrieval:** thrown transient errors retain the current job until the
+  same timeout. Malformed receipts, non-retryable download errors, or transient
+  errors past that deadline consume one worker failure without reading or
+  accepting the result. Known totals are preserved, cost history is marked
+  incomplete, and the issue status identifies the error and run. The existing
+  consecutive-failure budget bounds replacement attempts before blocking.
+- **Deferred costs:** interrupted jobs and incomplete receipts retain a compact
+  original job identity outside active-job authority. Discovery and cost reads
+  continue in every phase, with cancellation retried for abandoned running
+  jobs. A fixed window of `jobTimeoutMinutes` starts at first deferral and is
+  never extended by retries or replanning. Complete observations are settled
+  once. A permanent retrieval error or still-missing data after the deadline
+  records only known values, marks incomplete history, and stops collection.
+  These accounting failures do not consume the current worker's failure budget.
 - **Repair findings:** accepted `changes_requested` after decomposition return
   to coding, with two automatic repair rounds. The same outcome from research
   or decomposition counts as a failed stage instead.
 - **Manual controls:** requester or writer may pause, revise, or cancel.
   Only a writer may resume or retry. Retry clears infrastructure failures, not
   the total-job or repair counters, and cannot bypass unchanged prerequisites.
-- **Late output:** interruption clears the active job before requesting worker
-  cancellation. A late artifact does not authorize its own acceptance.
+- **Late output:** interruption retains any unsettled cost identity and clears
+  the active job in one state write before requesting worker cancellation.
+  Late costs can be collected; late results cannot authorize their own acceptance.
 - **Partial publication:** if a commit was written before interruption, recovery
   verifies its parent, proposal digest, and complete expected file tree. A
   matching commit message alone is insufficient.
@@ -593,7 +647,8 @@ already-running jobs must also be cancelled for an immediate emergency stop.
 
 Once `pr_open` is reached, normal PR review owns further interaction. The
 controller observes merge or closure; it does not autonomously respond to PR
-review comments or rerun the lifecycle for subsequent PR pushes.
+review comments or rerun the lifecycle for subsequent PR pushes. Pending cost
+collection and the issue's cost status can still progress, including after merge.
 
 ## Component Relationships
 
@@ -622,7 +677,7 @@ flowchart LR
     ComponentMain -->|"Construct Platform adapter"| ComponentGitHub
     ComponentMain -->|"Resolve and validate runtime policy"| ComponentContracts
     ComponentController -->|"Commands and plan approval"| ComponentDomain
-    ComponentController -->|"Jobs and publication prerequisites"| ComponentLifecycle
+    ComponentController -->|"Jobs, cost observations and publication prerequisites"| ComponentLifecycle
     ComponentController -->|"Platform operations"| ComponentGitHub
     ComponentController -->|"Validate results"| ComponentContracts
     ComponentController -->|"Restrict proposed changes"| ComponentChanges
@@ -640,9 +695,9 @@ flowchart LR
 | Component | Layer | Type | Responsibility |
 | --- | --- | --- | --- |
 | [Entry](../src/main.ts) | Control | CLI | Select issues and reject stale runs |
-| [Controller](../src/controller.ts) | Control | Orchestrator | Reconcile stages |
+| [Controller](../src/controller.ts) | Control | Orchestrator | Reconcile stages and pending costs |
 | [Domain](../src/domain.ts) | Domain | Rules | Parse commands and hash plans |
-| [Lifecycle](../src/lifecycle.ts) | Domain | Ledger | Jobs, tasks, evidence |
+| [Lifecycle](../src/lifecycle.ts) | Domain | Ledger | Jobs, tasks, evidence, cost observations |
 | [Contracts](../src/contracts.ts) | Validation | Schemas | Parse untrusted data |
 | [Changes](../src/changes.ts) | Validation | Policy | Restrict paths and sizes |
 | [GitHub](../src/github.ts) | Effects | Adapter | State and repository writes |
@@ -660,6 +715,7 @@ flowchart LR
 | Approval | Human actor and comment bound to an exact plan hash |
 | Task | Bounded work item in the approved plan's dependency graph |
 | Job | One registered attempt to execute a stage against a commit |
+| Pending cost | Original job identity, fixed expiry, and optional observed measurements; not execution authority |
 | Evidence | Accepted stage summary and run reference for one commit |
 | Feature PR | Published integrated feature, awaiting normal human review |
 
@@ -676,6 +732,12 @@ or an existing cost ledger. `migrateLifecycle` converts version 1 in memory and
 does not change phase, plan text or hash, approval, tasks, evidence, job identity,
 commit bindings, or existing cost counters. Malformed data and unknown versions
 are rejected; current-version writes never apply implicit defaults.
+
+`pendingCosts` is an optional version-2 extension, bounded to 100 entries by
+the maximum supported lifecycle job budget. Records without it remain valid
+without resets or a migration write. Entries reject unexpected authority fields
+and duplicate job IDs, and the field is removed when the queue empties. Older
+strict version-2 readers do not support this extension; rollback must preserve it.
 
 The storage adapter returns a transient `needsMigration` flag alongside the
 original file SHA. Only the controller saves the upgrade, before any command,
@@ -700,7 +762,8 @@ Deploy only after older controller and worker runs are idle, following
 | `job.inputSha` | Source commit supplied to a particular worker |
 | `job.runId` | Accepted GitHub run for the registered job |
 | `spend` | Cumulative recorded runner time and AI credits |
-| `spend.historyComplete` | `false` when historical or subsequently collected inference usage is unavailable |
+| `spend.historyComplete` | `false` when historical or finalized cost telemetry is unavailable |
+| `pendingCosts` | Unsettled original job identities, fixed collection deadlines, and optional observed values excluded from totals |
 
 At initialization, approval, and replanning, baseline and controller SHAs are
 captured from the default branch. `baseSha` then remains fixed while the
@@ -739,18 +802,47 @@ source is an installation step, not something these workflows configure.
 
 ### Cost Accounting
 
-Every completed run is charged exactly once to `spend`, keyed by run ID so a
-retried collection cannot double count. Rejected, failed, and superseded runs are
-included: the point is what a feature actually cost, not what its accepted work
-cost. Unlike evidence, `spend` survives a change of head commit.
+Complete worker costs are charged exactly once to `spend`. The active job's
+`costedRun` marker and the tally are saved together; deferred settlement removes
+its pending entry in the same SHA-checked write as the tally update. Reloading
+after a failed write or lost acknowledgement cannot double count. This includes
+rejected and failed results, cancelled workers, and superseded plans. Unlike
+evidence, costs survive a change of head commit or plan.
+
+Before clearing a dispatched, uncosted job, interruption and replanning retain
+its ID, stage, original source and trusted revision, plan hash, creation time,
+and any discovered run ID in `pendingCosts`. Incomplete receipts also retain
+their observed values there even when the stage advances. Pending observations
+are not yet included in totals. Repeated observations preserve known values,
+use the largest observed runner duration rather than summing repeated reads,
+and retain an observed credit-limit snapshot when later reads omit it.
+
+Every reconciliation processes abandoned accounting before terminal-state
+returns, matching the original workflow, actor, revision, job, and first run
+attempt. It never reads a historical result or mutates approval or evidence.
+Abandoned running workers receive renewed cancellation requests. Transient
+lookup, cancellation, and receipt failures do not block unrelated stage progress.
+The fixed collection window is `jobTimeoutMinutes` from first deferral (90
+minutes by default), not a deadline refreshed by each poll. If data is still
+missing after that window or retrieval fails permanently, an idempotent
+accounting diagnostic identifies the job; only observed values are settled and
+history is marked incomplete. Nothing is invented for an undiscovered run.
+
+The current active job keeps the existing bounded error path: thrown permanent
+or expired retrieval errors consume one worker failure without accepting the
+result. Any previously observed pending values are settled once, its entry is
+removed, and history is marked incomplete. Deferred-only failures do not fail a
+newer job. Missing telemetry itself remains observational, not a new gate.
 
 At PR creation, the publisher includes the controller's configured `SDLC_MODEL`
 and resolved `SDLC_AIC_CREDIT_LIMIT` in the Cost section, with defaults of `auto`
 and `250`. These are a publication-time configuration snapshot, not per-run
 history or a resolved inference-model identity. The cap applies separately to
 each inference job, not each turn. Existing PR descriptions are left unchanged
-on publication retries, even if repository variables have since changed.
-This reporting metadata adds no fields to persisted lifecycle state.
+on publication retries, even if repository variables or settled costs have
+since changed. Totals are also labeled as a creation-time snapshot, with pending
+jobs explicitly excluded and a link to the issue's updating lifecycle status.
+Pending accounting does not delay an otherwise eligible publication.
 
 New lifecycles and migrated version-1 cost ledgers have
 `spend.historyComplete: true`. A version-1 record without `spend` starts with
@@ -759,7 +851,9 @@ unknown, not zero. Issue status and newly created PR descriptions qualify those
 totals as partial history. The flag remains false through subsequent charging,
 repairs, and replanning; no historical backfill or existing PR rewrite occurs.
 Existing `job.costedRun` receipts are preserved to prevent charging a completed
-run again after migration.
+run again after migration. Job identities discarded by older controllers and
+unknown receipts already marked costed cannot be safely reconstructed from the
+aggregate tally. This update does not certify or backfill that earlier history.
 
 Runner time is the sum of each job's start-to-finish duration. GitHub reports
 zero billable time for public repositories, so billable minutes cannot be used.
@@ -791,8 +885,10 @@ Cost receipts represent unavailable usage and stop signals with `null` rather
 than numeric zero or boolean false. Missing, expired, duplicate, or oversized
 agent receipts produce unknown telemetry; malformed receipt content is still
 rejected. Deterministic scan and validation jobs have known zero inference
-usage. Unknown credits leave known totals intact and set `historyComplete`
-false. Only measured credits with `preempted: false` contribute to the near-limit
+usage. Unknown credits or stop signals remain pending until recovery or expiry.
+Unrecoverable telemetry sets `historyComplete` false; later successful settlement
+never clears an existing incomplete-history flag. Only measured credits with
+`preempted: false` contribute to the near-limit
 counter, and only `true` contributes to the pre-emption counter.
 
 For a failed workflow or unknown/pre-empted telemetry, the controller publishes
@@ -813,6 +909,7 @@ a gate; being near the cap alone must not invalidate a completed review.
 | Dispatch attempts per job | 2 |
 | Consecutive infrastructure failures before blocking | 2 |
 | Total registered jobs per lifecycle | 40 |
+| Deferred cost collection window | 90 minutes from first deferral |
 | Changed files per proposal | 30 |
 | Total proposed text bytes | 512,000 |
 | AI credits per inference job | `SDLC_AIC_CREDIT_LIMIT`, default 250 |
@@ -836,8 +933,9 @@ controller's repository publishing authority. The CodeQL job has scoped
 `security-events: write`, but no controller App token and no candidate build.
 Candidate tests run in separate jobs without publishing credentials.
 
-File policy is enforced outside the model: only coding and testing may propose
-changes, and testing may only modify test paths. Protected automation paths,
+File policy is enforced outside the model: only coding, testing, and documentation
+may propose changes. Testing is limited to `policy.testPaths`; documentation is
+limited to `policy.docsPaths`. Protected automation paths,
 baseline tests, unsafe paths, case-colliding path segments, symlinks, binary
 data, oversized changes, and conflicting branch history are rejected. Worker role instructions provide
 behavioral guidance; merely reading a role profile does not create a separate

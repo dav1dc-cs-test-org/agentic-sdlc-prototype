@@ -2,8 +2,8 @@ import { approvePlan, makePlan, parseCommand, type Phase } from './domain.ts';
 import { reportSchema, type Change, type Cost, type Intake, type Policy, type Report } from './contracts.ts';
 import { validateChanges } from './changes.ts';
 import {
-  assertCurrentResult, assertPublishable, createLifecycle, nextTask, recordChange, recordSpend,
-  requestRepair, startJob, validateTasks, type Job, type Lifecycle, type Stage, type Task,
+  assertCurrentResult, assertPublishable, createLifecycle, deferCost, forgetCost, nextTask, observeCost, recordChange, recordSpend,
+  requestRepair, startJob, validateTasks, type Job, type JobIdentity, type Lifecycle, type PendingCost, type Stage, type Task,
 } from './lifecycle.ts';
 
 export interface Issue {
@@ -34,10 +34,10 @@ export interface Platform {
   task(parent: Lifecycle, task: Task): Promise<number>;
   linkTasks(state: Lifecycle): Promise<void>;
   dispatch(job: Job, state: Lifecycle): Promise<void>;
-  findRun(job: Job): Promise<Run | undefined>;
+  findRun(job: JobIdentity): Promise<Run | undefined>;
   cancelRun(runId: number): Promise<void>;
   report(run: Run, job: Job): Promise<Report>;
-  cost(run: Run, job: Job): Promise<Cost & { runnerMs: number }>;
+  cost(run: Run, job: JobIdentity): Promise<Cost & { runnerMs: number }>;
   applyChanges(state: Lifecycle, job: Job, changes: Change[]): Promise<string>;
   publish(state: Lifecycle): Promise<number>;
   pullRequest(number: number): Promise<'open' | 'closed' | 'merged'>;
@@ -89,6 +89,7 @@ export class Controller {
       await this.platform.save(record);
     }
     const state = record.state;
+    await this.reconcileCosts(record);
     if (state.phase === 'merged' || state.phase === 'cancelled' && !state.prNumber) {
       await this.status(state);
       return;
@@ -155,6 +156,7 @@ export class Controller {
         } else if (command.kind === 'revise') {
           const baseline = await this.platform.baseline();
           const previousJob = state.job;
+          if (previousJob) this.retainCost(state, previousJob);
           state.retiredTasks.push(...state.tasks.flatMap(task => task.issueNumber ? [task.issueNumber] : []));
           state.job = undefined;
           state.request = this.request(issue);
@@ -183,6 +185,7 @@ export class Controller {
           const expected = command.kind === 'retry' ? 'blocked' : 'paused';
           if (state.phase !== expected || !state.resumePhase) throw new Error(`Lifecycle is not ${expected}`);
           state.phase = state.resumePhase;
+          if (state.job) this.retainCost(state, state.job);
           state.job = undefined;
           state.failures = 0;
           state.error = undefined;
@@ -314,13 +317,31 @@ export class Controller {
       !(run.conclusion === 'failure' && ['scan', 'validate'].includes(job.stage));
     // Every completed run is charged, accepted or not: a rejected result still consumed the budget.
     if (job.costedRun !== run.id) {
-      const cost = await this.platform.cost(run, job);
+      let cost: Cost & { runnerMs: number };
+      try {
+        cost = await this.platform.cost(run, job);
+      } catch (error) {
+        const retryable = transientPlatformError(error);
+        const age = this.clock().getTime() - Date.parse(job.createdAt);
+        if (retryable && age <= this.policy.jobTimeoutMinutes * 60_000) throw error;
+        const pending = state.pendingCosts?.find(item => item.job.id === job.id);
+        if (pending?.observed) recordSpend(state, pending.observed, this.policy.maxJobCredits);
+        forgetCost(state, job.id);
+        state.spend.historyComplete = false;
+        const reason = retryable ? 'remained unavailable past the job timeout' : 'was rejected';
+        return this.failed(record, `Cost receipt for ${job.stage} job ${job.id} ${reason}: ` +
+          `${this.message(error).slice(0, 6000)}. Inspect ${run.url}.`, false);
+      }
+      const pending = this.retainCost(state, job, cost)!;
+      cost = pending.observed!;
       if (failed || cost.preempted === true || cost.credits === null || cost.preempted === null) {
         await this.attemptDiagnostics(state, job, run, cost, failed);
       }
-      recordSpend(state, cost, this.policy.maxJobCredits);
-      job.costedRun = run.id;
-      await this.platform.save(record);
+      if (cost.credits !== null && cost.preempted !== null) {
+        await this.finishCost(record, pending, run);
+      } else if (this.clock().getTime() > Date.parse(pending.expiresAt)) {
+        await this.finishCost(record, pending, run, 'Telemetry remained incomplete past the collection deadline.');
+      } else await this.platform.save(record);
     }
     if (failed) {
       return this.failed(record, `Worker ${run.conclusion ?? 'failed'}: ${run.url}. ` +
@@ -423,8 +444,59 @@ export class Controller {
         'Telemetry warning: inspect the run and remaining work. Telemetry alone does not prove review completion.') + checkpoint);
   }
 
-  private async failed(record: RecordState, message: string): Promise<void> {
+  private retainCost(state: Lifecycle, job: Job, observed?: PendingCost['observed']): PendingCost | undefined {
+    const expiresAt = new Date(this.clock().getTime() + this.policy.jobTimeoutMinutes * 60_000).toISOString();
+    return deferCost(state, job, expiresAt, observed);
+  }
+
+  private async reconcileCosts(record: RecordState): Promise<void> {
+    for (const pending of [...record.state.pendingCosts ?? []]) {
+      if (pending.job.id === record.state.job?.id) continue;
+      let run: Run | undefined;
+      let cost: PendingCost['observed'];
+      let failure: { message: string; retryable: boolean } | undefined;
+      try {
+        run = await this.platform.findRun(pending.job);
+        if (run?.status === 'completed') cost = await this.platform.cost(run, pending.job);
+        else if (run) await this.platform.cancelRun(run.id);
+      } catch (error) {
+        failure = { message: this.message(error),
+          retryable: run !== undefined && run.status !== 'completed' || transientPlatformError(error) };
+      }
+      const discovered = run !== undefined && pending.job.runId !== run.id;
+      if (run) pending.job.runId = run.id;
+      if (cost) observeCost(pending, cost);
+      if (pending.observed && pending.observed.credits !== null && pending.observed.preempted !== null) {
+        await this.finishCost(record, pending, run);
+      } else if (this.clock().getTime() > Date.parse(pending.expiresAt) || failure && !failure.retryable) {
+        const reason = failure ? `Cost collection failed: ${failure.message.slice(0, 6000)}` :
+          'The run or its complete telemetry remained unavailable past the collection deadline.';
+        await this.finishCost(record, pending, run, reason);
+      } else if (discovered || cost) await this.platform.save(record);
+    }
+  }
+
+  private async finishCost(record: RecordState, pending: PendingCost, run?: Run, reason?: string): Promise<void> {
     const state = record.state;
+    if (reason) {
+      await this.platform.comment(state.issueNumber, `accounting:${pending.job.id}`,
+        `### Incomplete cost accounting\n\nJob: \`${pending.job.id}\` (${pending.job.stage}). ` +
+        (run ? `[Run ${run.id}](${run.url}). ` : `Run: ${pending.job.runId ?? 'not discovered'}. `) +
+        `Source: \`${pending.job.inputSha}\`. Trusted revision: \`${pending.job.controlSha}\`. ` +
+        `Plan: \`${pending.job.planHash ?? 'not yet approved'}\`.\n\n${reason}\n\n` +
+        'Only observed values were recorded. Missing telemetry is not measured zero. ' +
+        'Automatic collection has stopped; this accounting record does not accept any worker result.');
+    }
+    if (pending.observed) recordSpend(state, pending.observed, this.policy.maxJobCredits);
+    if (reason) state.spend.historyComplete = false;
+    if (state.job?.id === pending.job.id && pending.job.runId !== undefined) state.job.costedRun = pending.job.runId;
+    forgetCost(state, pending.job.id);
+    await this.platform.save(record);
+  }
+
+  private async failed(record: RecordState, message: string, retainCost = true): Promise<void> {
+    const state = record.state;
+    if (retainCost && state.job) this.retainCost(state, state.job);
     state.failures += 1;
     state.job = undefined;
     state.error = message;
@@ -440,6 +512,7 @@ export class Controller {
     const job = state.job;
     if (!['paused', 'blocked', 'cancelled', 'merged'].includes(state.phase)) state.resumePhase = state.phase;
     state.phase = phase;
+    if (job) this.retainCost(state, job);
     state.job = undefined;
     await this.platform.save(record);
     if (job) {
@@ -453,6 +526,7 @@ export class Controller {
     const label = state.spend.historyComplete ? 'Cost' : 'Recorded cost (earlier costs unavailable)';
     return `${label}: ${(runnerMs / 60_000).toFixed(1)} runner minutes, ${credits.toFixed(1)} AI credits ` +
       `over ${runs} run${runs === 1 ? '' : 's'}. Near-limit runs: ${nearLimit}. Pre-empted: ${preempted}. ` +
+      (state.pendingCosts?.length ? `Pending cost collection: ${state.pendingCosts.length} job(s), excluded from these totals. ` : '') +
       `Current per-job limit: ${this.policy.maxJobCredits} AI credits.`;
   }
 

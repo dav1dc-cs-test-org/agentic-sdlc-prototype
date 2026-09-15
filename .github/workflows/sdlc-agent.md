@@ -188,9 +188,11 @@ fields. Do not report success if you could not complete the assigned work.
 
 After writing the report, run `node control/src/worker.ts collect` from the
 workspace root. This packages actual source changes and a commit-bound receipt
-as `.sdlc-output/result.json`. Only code and test stages may propose file changes;
-the testing stage may change test paths only. Existing baseline tests are
-immutable. Other stages must leave the source checkout unchanged.
+as `.sdlc-output/result.json`. Only `code`, `test`, and `document` stages may
+propose file changes. The `test` stage may change only paths in `policy.testPaths`;
+the `document` stage may change only paths in `policy.docsPaths`. These permissions
+do not override protected-path restrictions. Existing baseline tests are immutable.
+All other stages must leave the source checkout unchanged.
 
 Finally call `noop` to indicate that no direct GitHub mutation is needed. The
 fixed post-step uploads the result for the controller. Do not use the artifact

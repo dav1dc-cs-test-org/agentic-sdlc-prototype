@@ -4,10 +4,10 @@ import { unzipSync } from 'fflate';
 import { digest } from './domain.ts';
 import { isProtectedPath, isTestPath, validateChanges } from './changes.ts';
 import { costSchema, lifecycleSchema, migrateLifecycle, reportSchema, type Change, type Cost, type Policy, type Report } from './contracts.ts';
-import { assertPublishable, type Job, type Lifecycle, type Task } from './lifecycle.ts';
+import { assertPublishable, type Job, type JobIdentity, type Lifecycle, type Task } from './lifecycle.ts';
 import { RetryablePlatformError, type Comment, type Issue, type Platform, type RecordState, type Run } from './controller.ts';
 
-export function workerFile(job: Job): string {
+export function workerFile(job: Pick<Job, 'stage'>): string {
   return ['scan', 'validate'].includes(job.stage) ? 'sdlc-checks.yml' : 'sdlc-agent.lock.yml';
 }
 
@@ -233,7 +233,7 @@ export class GitHub implements Platform {
     });
   }
 
-  async findRun(job: Job): Promise<Run | undefined> {
+  async findRun(job: JobIdentity): Promise<Run | undefined> {
     const runs = await this.api.paginate(this.api.actions.listWorkflowRuns, {
       ...this.scope, workflow_id: workerFile(job), event: 'workflow_dispatch',
       head_sha: job.controlSha, created: `>=${job.createdAt}`, per_page: 100,
@@ -269,7 +269,7 @@ export class GitHub implements Platform {
     return decodeReportArchive(new Uint8Array(response.data as ArrayBuffer));
   }
 
-  async cost(run: Run, job: Job): Promise<Cost & { runnerMs: number }> {
+  async cost(run: Run, job: JobIdentity): Promise<Cost & { runnerMs: number }> {
     const jobs = await this.api.paginate(this.api.actions.listJobsForWorkflowRun, {
       ...this.scope, run_id: run.id, filter: 'latest', per_page: 100,
     });
@@ -399,6 +399,9 @@ export class GitHub implements Platform {
           `Configuration at PR creation:\n\n\`\`\`json\n${configuration}\n\`\`\`\n\n` +
           'The model setting is a configured selector, not a resolved per-run model. ' +
           'The credit limit applies separately to each inference job, not each turn; earlier runs may have used different settings.\n\n' +
+          `Cost snapshot at PR creation. [Lifecycle status](https://github.com/${this.scope.owner}/${this.scope.repo}/issues/${state.issueNumber}) ` +
+          'tracks later cost settlement.\n\n' +
+          (state.pendingCosts?.length ? `**Pending cost collection:** ${state.pendingCosts.length} job(s) are excluded from these totals.\n\n` : '') +
           (state.spend.historyComplete ? '' :
             '**Partial cost history:** earlier costs unavailable. Totals cover recorded runs only.\n\n') +
           `${(state.spend.runnerMs / 60_000).toFixed(1)} runner minutes and ` +

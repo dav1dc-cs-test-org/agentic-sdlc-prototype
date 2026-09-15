@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { Controller, RetryablePlatformError, type Comment, type Platform, type RecordState, type Run } from '../src/controller.ts';
-import { lifecycleSchema, migrateLifecycle, policySchema, type Change, type Cost, type Intake, type Report } from '../src/contracts.ts';
+import { costSchema, lifecycleSchema, migrateLifecycle, policySchema, type Change, type Cost, type Intake, type Report } from '../src/contracts.ts';
 import { createLifecycle, type Job, type Lifecycle, type Task } from '../src/lifecycle.ts';
 
 const policy = policySchema.parse(JSON.parse(readFileSync('.github/sdlc/policy.json', 'utf8')));
@@ -81,8 +81,10 @@ class FakePlatform implements Platform {
   }
   costs: (Cost & { runnerMs: number })[] = [];
   charged: number[] = [];
+  costFailure?: unknown;
   async cost(run: Run) {
     this.charged.push(run.id);
+    if (this.costFailure) throw this.costFailure;
     return this.costs.shift() ?? { runnerMs: 60_000, credits: 10, preempted: false };
   }
   async applyChanges(_state: Lifecycle, _job: Job, _changes: Change[]) {
@@ -307,7 +309,9 @@ test('legacy migration cannot bypass the trusted-revision gate or accept an old 
   assert.equal(platform.dispatched.length, dispatched);
   assert.equal(platform.changed, 0);
   assert.equal(platform.published, 0);
-  assert.equal(platform.charged.includes(50), false);
+  assert.equal(platform.charged.filter(runId => runId === 50).length, 1);
+  assert.equal(platform.stored!.state.spend.historyComplete, false);
+  assert.equal(platform.stored!.state.pendingCosts, undefined);
 });
 
 test('controller entry point isolates corrupt state and migrates closed issues idempotently', () => {
@@ -632,6 +636,263 @@ test('every completed run is charged once, including one the credit limiter pre-
   assert.doesNotMatch(platform.outputs.get('status')!, /earlier costs unavailable/);
 });
 
+test('cancelled, paused, and superseded jobs settle costs after reload without accepting their results', async () => {
+  for (const command of ['/sdlc cancel', '/sdlc pause', '/sdlc revise Use a smaller plan']) {
+    const { platform } = await coding();
+    const before = platform.stored!.state;
+    const job = before.job!;
+    const run = { id: 40, status: 'in_progress', conclusion: null, url: 'https://github.com/owner/repo/actions/runs/40' };
+    platform.runs.set(job.id, run);
+    platform.reply(command);
+    await new Controller(platform, policy).tick(123);
+    const interrupted = platform.stored!.state;
+    assert.notEqual(interrupted.job?.id, job.id);
+    assert.equal(interrupted.pendingCosts!.length, 1);
+    assert.equal(interrupted.pendingCosts![0]!.job.inputSha, job.inputSha);
+    assert.equal(interrupted.pendingCosts![0]!.job.controlSha, job.controlSha);
+    assert.equal(interrupted.pendingCosts![0]!.job.planHash, job.planHash);
+    assert.match(platform.outputs.get('status')!, /Pending cost collection: 1 job\(s\), excluded from these totals/);
+    platform.runs.set(job.id, { ...run, status: 'completed', conclusion: 'success' });
+    platform.reports.set(run.id, { jobId: job.id, inputSha: job.inputSha, outcome: 'pass', summary: 'Old work',
+      changes: [{ path: 'feature.txt', content: 'Must never be accepted' }] });
+    platform.costs = [{ runnerMs: 120_000, credits: 42, preempted: false }];
+    platform.report = async () => { throw new Error('Accounting must never read old results'); };
+    await new Controller(platform, policy).tick(123);
+    const settled = platform.stored!.state;
+    assert.deepEqual(settled.spend, { ...before.spend, runs: before.spend.runs + 1,
+      runnerMs: before.spend.runnerMs + 120_000, credits: before.spend.credits + 42 });
+    assert.equal(settled.pendingCosts, undefined);
+    assert.equal(settled.phase, interrupted.phase);
+    assert.deepEqual(settled.job, interrupted.job);
+    assert.deepEqual(settled.approval, interrupted.approval);
+    assert.deepEqual(settled.evidence, interrupted.evidence);
+    assert.equal(platform.changed, 0);
+    assert.equal(platform.published, 0);
+    await new Controller(platform, policy).tick(123);
+    assert.deepEqual(platform.stored!.state.spend, settled.spend);
+    assert.equal(platform.charged.filter(runId => runId === run.id).length, 1);
+  }
+});
+
+test('late receipts recover after a stage advances or its result retries, with exactly one tally update', async () => {
+  for (const retryResult of [false, true]) {
+    const { platform } = await coding();
+    const before = platform.stored!.state;
+    const job = before.job!;
+    platform.finish();
+    const run = platform.runs.get(job.id)!;
+    platform.costs = [{ runnerMs: 60_000, credits: null, preempted: null }];
+    if (retryResult) platform.reportFailure = new RetryablePlatformError('Result is not yet visible');
+    const first = new Controller(platform, policy).tick(123);
+    if (retryResult) await assert.rejects(first, /Result is not yet visible/);
+    else await first;
+    assert.deepEqual(platform.stored!.state.spend, before.spend);
+    assert.equal(platform.stored!.state.pendingCosts!.length, 1);
+    assert.equal(platform.stored!.state.job?.costedRun, undefined);
+    platform.reportFailure = undefined;
+    platform.costs = [{ runnerMs: 120_000, credits: 42, preempted: false, creditLimit: 50 }];
+    await new Controller(platform, policy).tick(123);
+    const settled = platform.stored!.state;
+    assert.deepEqual(settled.spend, { ...before.spend, runs: before.spend.runs + 1,
+      runnerMs: before.spend.runnerMs + 120_000, credits: before.spend.credits + 42, nearLimit: before.spend.nearLimit + 1 });
+    assert.equal(settled.pendingCosts, undefined);
+    assert.notEqual(settled.job?.id, job.id);
+    await new Controller(platform, policy).tick(123);
+    assert.deepEqual(platform.stored!.state.spend, settled.spend);
+    assert.equal(platform.charged.filter(runId => runId === run.id).length, 2);
+  }
+});
+
+test('partial receipts preserve known measurements and original caps without repairing earlier history', async () => {
+  for (const historyComplete of [true, false]) {
+    const { platform } = await coding();
+    platform.patch(state => { state.spend.historyComplete = historyComplete; });
+    const before = platform.stored!.state.spend;
+    platform.finish();
+    platform.costs = [{ runnerMs: 60_000, credits: 200, preempted: null, creditLimit: 250 }];
+    await new Controller(platform, policy).tick(123);
+    assert.deepEqual(platform.stored!.state.spend, before);
+    platform.costs = [{ runnerMs: 30_000, credits: null, preempted: false }];
+    await new Controller(platform, { ...policy, maxJobCredits: 500 }).tick(123);
+    assert.deepEqual(platform.stored!.state.spend, { ...before, runs: before.runs + 1,
+      runnerMs: before.runnerMs + 60_000, credits: before.credits + 200, nearLimit: before.nearLimit + 1 });
+    assert.equal(platform.stored!.state.pendingCosts, undefined);
+  }
+});
+
+test('incomplete receipts expire at a fixed deadline and record only observed values once', async () => {
+  for (const retryResult of [false, true]) for (const credits of [null, 37]) {
+    const platform = new FakePlatform();
+    let time = new Date('2026-09-14T12:00:00Z');
+    const tick = () => new Controller(platform, policy, () => time).tick(123);
+    await new Controller(platform, policy, () => time).tick(123, intake(platform));
+    const job = platform.stored!.state.job!;
+    const cost = { runnerMs: 60_000, credits, preempted: null, creditLimit: 250 };
+    platform.costs = [cost, cost, cost];
+    platform.finish({ plan: 'Implement the feature.' });
+    if (retryResult) platform.reportFailure = new RetryablePlatformError('Result not ready');
+    if (retryResult) await assert.rejects(tick(), /Result not ready/);
+    else await tick();
+    const expiresAt = platform.stored!.state.pendingCosts![0]!.expiresAt;
+    time = new Date(expiresAt);
+    if (retryResult) await assert.rejects(tick(), /Result not ready/);
+    else await tick();
+    assert.equal(platform.stored!.state.pendingCosts![0]!.expiresAt, expiresAt);
+    assert.equal(platform.stored!.state.spend.runs, 0);
+    time = new Date(time.getTime() + 1);
+    platform.reportFailure = undefined;
+    await tick();
+    const state = platform.stored!.state;
+    assert.equal(state.phase, 'awaiting_approval');
+    assert.equal(state.pendingCosts, undefined);
+    assert.deepEqual(state.spend, { runs: 1, runnerMs: 60_000, credits: credits ?? 0,
+      nearLimit: 0, preempted: 0, historyComplete: false });
+    assert.match(platform.outputs.get(`accounting:${job.id}`)!, /collection deadline/);
+    assert.match(platform.outputs.get(`accounting:${job.id}`)!, /Missing telemetry is not measured zero/);
+    await tick();
+    assert.deepEqual(platform.stored!.state.spend, state.spend);
+    assert.equal(platform.charged.length, 3);
+  }
+});
+
+test('abandoned run discovery is bounded even on a closed issue', async () => {
+  const platform = new FakePlatform();
+  let time = new Date('2026-09-14T12:00:00Z');
+  await new Controller(platform, policy, () => time).tick(123, intake(platform));
+  const job = platform.stored!.state.job!;
+  platform.reply('/sdlc cancel');
+  await new Controller(platform, policy, () => time).tick(123);
+  platform.input.open = false;
+  const pending = platform.stored!.state.pendingCosts![0]!;
+  assert.equal(pending.job.runId, undefined);
+  time = new Date(Date.parse(pending.expiresAt) + 1);
+  await new Controller(platform, policy, () => time).tick(123);
+  const state = platform.stored!.state;
+  assert.equal(state.phase, 'cancelled');
+  assert.equal(state.job, undefined);
+  assert.equal(state.pendingCosts, undefined);
+  assert.equal(state.spend.historyComplete, false);
+  assert.equal(state.spend.runs, 0);
+  assert.equal(state.spend.credits, 0);
+  assert.equal(platform.charged.length, 0);
+  assert.match(platform.outputs.get(`accounting:${job.id}`)!, /Run: not discovered/);
+  await new Controller(platform, policy, () => time).tick(123);
+  assert.deepEqual(platform.stored!.state.spend, state.spend);
+  assert.equal(platform.dispatched.length, 1);
+});
+
+test('pending costs settle before terminal and closed-issue returns without starting new work', async () => {
+  for (const phase of ['cancelled', 'merged', 'pr_open'] as const) {
+    const { platform } = await coding();
+    const before = platform.stored!.state;
+    const job = before.job!;
+    platform.reply('/sdlc cancel');
+    await new Controller(platform, policy).tick(123);
+    platform.patch(state => { state.phase = phase; if (phase !== 'cancelled') state.prNumber = 126; });
+    platform.input.open = false;
+    platform.runs.set(job.id, { id: 40, status: 'completed', conclusion: 'cancelled',
+      url: 'https://github.com/owner/repo/actions/runs/40' });
+    const dispatches = platform.dispatched.length;
+    platform.costs = [{ runnerMs: 30_000, credits: 17, preempted: true, creditLimit: 15 }];
+    await new Controller(platform, policy).tick(123);
+    assert.equal(platform.stored!.state.pendingCosts, undefined);
+    assert.deepEqual(platform.stored!.state.spend, { ...before.spend, runs: before.spend.runs + 1,
+      runnerMs: before.spend.runnerMs + 30_000, credits: before.spend.credits + 17, preempted: before.spend.preempted + 1 });
+    assert.deepEqual(platform.stored!.state.evidence, before.evidence);
+    assert.equal(platform.stored!.state.job, undefined);
+    assert.equal(platform.dispatched.length, dispatches);
+    assert.equal(platform.changed, 0);
+    assert.equal(platform.published, 0);
+  }
+});
+
+test('pending receipt failures retry independently of new work and permanently rejected receipts stop', async () => {
+  for (const recover of [false, true]) {
+    const platform = new FakePlatform();
+    await new Controller(platform, policy).tick(123, intake(platform));
+    const job = platform.stored!.state.job!;
+    platform.costs = [{ runnerMs: 60_000, credits: null, preempted: null }];
+    platform.finish({ plan: 'Implement the feature.' });
+    await new Controller(platform, policy).tick(123);
+    platform.costFailure = Object.assign(new Error('Telemetry service unavailable'), { status: 503 });
+    platform.reply('/sdlc approve v1');
+    await new Controller(platform, policy).tick(123);
+    assert.equal(platform.stored!.state.phase, 'decomposing');
+    assert.equal(platform.stored!.state.pendingCosts![0]!.job.id, job.id);
+    assert.equal(platform.stored!.state.failures, 0);
+    const active = platform.stored!.state.job!;
+    platform.costFailure = recover ? undefined : Object.assign(new Error('Receipt download denied'), { status: 403 });
+    platform.costs = [{ runnerMs: 120_000, credits: 42, preempted: false }];
+    await new Controller(platform, policy).tick(123);
+    const state = platform.stored!.state;
+    assert.deepEqual(state.job, active);
+    assert.equal(state.pendingCosts, undefined);
+    assert.equal(state.spend.runs, 1);
+    assert.equal(state.spend.credits, recover ? 42 : 0);
+    assert.equal(state.spend.historyComplete, recover);
+    assert.equal(state.failures, 0);
+    if (!recover) assert.match(platform.outputs.get(`accounting:${job.id}`)!, /Receipt download denied/);
+    await new Controller(platform, policy).tick(123);
+    assert.deepEqual(platform.stored!.state.spend, state.spend);
+    assert.equal(platform.charged.length, 3);
+  }
+});
+
+test('pending settlement survives rejected state writes and lost committed acknowledgements without double charging', async () => {
+  for (const committed of [false, true]) {
+    const platform = new FakePlatform();
+    await new Controller(platform, policy).tick(123, intake(platform));
+    platform.costs = [{ runnerMs: 60_000, credits: null, preempted: null }];
+    platform.finish({ plan: 'Implement the feature.' });
+    await new Controller(platform, policy).tick(123);
+    const cost = { runnerMs: 120_000, credits: 42, preempted: false, creditLimit: 50 };
+    platform.costs = [cost, cost];
+    const save = platform.save.bind(platform);
+    let interrupted = false;
+    platform.save = async record => {
+      if (!interrupted && record.state.spend.runs === 1) {
+        interrupted = true;
+        if (committed) await save(record);
+        throw Object.assign(new Error('Settlement write interrupted'), { status: committed ? 503 : 409 });
+      }
+      await save(record);
+    };
+    await assert.rejects(new Controller(platform, policy).tick(123), /Settlement write interrupted/);
+    assert.equal(platform.stored!.state.spend.runs, committed ? 1 : 0);
+    assert.equal(platform.stored!.state.pendingCosts?.length ?? 0, committed ? 0 : 1);
+    await new Controller(platform, policy).tick(123);
+    const state = platform.stored!.state;
+    assert.equal(state.pendingCosts, undefined);
+    assert.deepEqual(state.spend, { runs: 1, runnerMs: 120_000, credits: 42,
+      nearLimit: 1, preempted: 0, historyComplete: true });
+    await new Controller(platform, policy).tick(123);
+    assert.deepEqual(platform.stored!.state.spend, state.spend);
+    assert.equal(platform.charged.length, committed ? 2 : 3);
+  }
+});
+
+test('failed interruption saves retain active authority and retry before cancellation or accounting effects', async () => {
+  const { platform } = await coding();
+  const before = platform.stored!.state;
+  const job = before.job!;
+  const run = { id: 40, status: 'in_progress', conclusion: null, url: 'https://github.com/owner/repo/actions/runs/40' };
+  platform.runs.set(job.id, run);
+  platform.reply('/sdlc pause');
+  platform.saveFailure = Object.assign(new Error('Interruption save conflict'), { status: 409 });
+  await assert.rejects(new Controller(platform, policy).tick(123), /Interruption save conflict/);
+  assert.deepEqual(platform.stored!.state, before);
+  assert.deepEqual(platform.cancelled, []);
+  platform.saveFailure = undefined;
+  await new Controller(platform, policy).tick(123);
+  assert.equal(platform.stored!.state.job, undefined);
+  assert.equal(platform.stored!.state.pendingCosts![0]!.job.id, job.id);
+  assert.deepEqual(platform.cancelled, [40]);
+  platform.runs.set(job.id, { ...run, status: 'completed', conclusion: 'cancelled' });
+  await new Controller(platform, policy).tick(123);
+  assert.equal(platform.stored!.state.spend.runs, before.spend.runs + 1);
+  assert.equal(platform.stored!.state.phase, 'paused');
+});
+
 test('near-limit accounting uses the run receipt even after the configured budget changes', async () => {
   const { platform, controller } = await coding();
   platform.costs = [{ runnerMs: 60_000, credits: 300, preempted: false, creditLimit: 500 }];
@@ -705,7 +966,7 @@ test('failed Security attempts discard stale checkpoints and identify unknown us
     assert.match(diagnostic, /No valid current-job Security checkpoint/);
     assert.doesNotMatch(diagnostic, /Invalid report must not be shown/);
     assert.equal(platform.stored!.state.spend.credits, credits);
-    assert.equal(platform.stored!.state.spend.historyComplete, false);
+    assert.equal(platform.stored!.state.pendingCosts!.length, 1);
     assert.equal(platform.stored!.state.spend.preempted, 0);
     assert.equal(platform.stored!.state.evidence.some(item => item.stage === 'security'), false);
     assert.equal(platform.changed, 0);
@@ -966,6 +1227,110 @@ test('failed cancellation cannot revive a durably interrupted job', async () => 
   assert.equal(platform.stored!.state.phase, 'paused');
   assert.equal(platform.stored!.state.job, undefined);
   assert.equal(platform.dispatched.length, dispatches);
+});
+
+test('invalid cost receipts and denied downloads exhaust bounded attempts without accepting results', async () => {
+  const invalid = costSchema.safeParse({ credits: -1, preempted: false });
+  assert.ok(!invalid.success);
+  for (const failure of [invalid.error, Object.assign(new Error('Cost download denied'), { status: 403 })]) {
+    const { platform, controller } = await coding();
+    for (let completion = 0; completion < 3; completion += 1) { platform.finish(); await controller.tick(123); }
+    const before = platform.stored!.state;
+    assert.equal(before.job!.stage, 'security');
+    platform.costFailure = failure;
+    let reportReads = 0;
+    platform.report = async () => { reportReads += 1; throw new Error('Result must not be read'); };
+    for (let attempt = 1; attempt <= policy.maxJobAttempts; attempt += 1) {
+      const job = platform.stored!.state.job!;
+      platform.finish({ outcome: 'pass', summary: 'Review claims success' });
+      const run = platform.runs.get(job.id)!;
+      await controller.tick(123);
+      const state = platform.stored!.state;
+      assert.equal(state.failures, attempt);
+      assert.notEqual(state.job?.id, job.id);
+      assert.deepEqual(state.spend, { ...before.spend, historyComplete: false });
+      assert.deepEqual(state.evidence, before.evidence);
+      assert.deepEqual(state.approval, before.approval);
+      assert.equal(state.repairs, before.repairs);
+      assert.ok(state.error!.includes(`Cost receipt for security job ${job.id} was rejected`));
+      assert.ok(state.error!.includes(run.url));
+      assert.match(state.error!, /credits|Cost download denied/);
+    }
+    const state = platform.stored!.state;
+    assert.equal(state.phase, 'blocked');
+    assert.equal(state.resumePhase, 'security');
+    assert.equal(state.job, undefined);
+    const requests = platform.charged.length;
+    await controller.tick(123);
+    assert.equal(platform.charged.length, requests);
+    assert.equal(platform.stored!.state.failures, policy.maxJobAttempts);
+    assert.match(platform.outputs.get('status')!, /Cost receipt for security job/);
+    assert.equal(reportReads, 0);
+    assert.equal(platform.changed, 0);
+    assert.equal(platform.published, 0);
+  }
+});
+
+test('transient cost errors preserve the registered job and recover without double charging', async () => {
+  for (const failure of [
+    new RetryablePlatformError('Cost artifact not yet available'),
+    Object.assign(new Error('Cost artifact not ready'), { status: 404 }),
+    Object.assign(new Error('Cost service unavailable'), { status: 503 }),
+    Object.assign(new Error('Cost rate limited'), { status: 403, response: { headers: { 'retry-after': '60' } } }),
+    Object.assign(new Error('Connection reset'), { code: 'ECONNRESET' }),
+  ]) {
+    const platform = new FakePlatform();
+    const controller = new Controller(platform, policy, () => new Date('2026-09-14T12:00:00Z'));
+    await controller.tick(123, intake(platform));
+    platform.finish({ plan: 'Implement the feature.' });
+    const job = platform.stored!.state.job!;
+    const before = platform.stored!.state.spend;
+    platform.costFailure = failure;
+    await assert.rejects(controller.tick(123), error => error === failure);
+    assert.equal(platform.stored!.state.job!.id, job.id);
+    assert.equal(platform.stored!.state.job!.costedRun, undefined);
+    assert.equal(platform.stored!.state.failures, 0);
+    assert.deepEqual(platform.stored!.state.spend, before);
+    platform.costFailure = undefined;
+    platform.costs = [{ runnerMs: 120_000, credits: 42, preempted: false, creditLimit: 250 }];
+    await controller.tick(123);
+    assert.equal(platform.stored!.state.phase, 'awaiting_approval');
+    assert.deepEqual(platform.stored!.state.spend, {
+      runs: 1, runnerMs: 120_000, credits: 42, nearLimit: 0, preempted: 0, historyComplete: true,
+    });
+    const requests = platform.charged.length;
+    await controller.tick(123);
+    assert.equal(platform.charged.length, requests);
+    assert.equal(platform.stored!.state.spend.runs, 1);
+  }
+});
+
+test('persistent cost errors consume bounded failures after the job deadline', async () => {
+  const platform = new FakePlatform();
+  let time = new Date('2026-09-14T12:00:00Z');
+  const controller = new Controller(platform, policy, () => time);
+  await controller.tick(123, intake(platform));
+  const failure = Object.assign(new Error('Cost service unavailable'), { status: 503 });
+  platform.costFailure = failure;
+  for (let attempt = 1; attempt <= policy.maxJobAttempts; attempt += 1) {
+    const job = platform.stored!.state.job!;
+    platform.finish({ plan: 'Must not be accepted without the cost receipt.' });
+    time = new Date(Date.parse(job.createdAt) + policy.jobTimeoutMinutes * 60_000);
+    await assert.rejects(controller.tick(123), error => error === failure);
+    assert.equal(platform.stored!.state.job!.id, job.id);
+    assert.equal(platform.stored!.state.failures, attempt - 1);
+    time = new Date(time.getTime() + 1);
+    await controller.tick(123);
+    assert.notEqual(platform.stored!.state.job?.id, job.id);
+    assert.equal(platform.stored!.state.failures, attempt);
+    assert.match(platform.stored!.state.error!, /Cost receipt for research job .* remained unavailable past the job timeout/);
+    assert.equal(platform.stored!.state.plan, undefined);
+    assert.equal(platform.stored!.state.spend.runs, 0);
+    assert.equal(platform.stored!.state.spend.historyComplete, false);
+  }
+  assert.equal(platform.stored!.state.phase, 'blocked');
+  assert.equal(platform.stored!.state.resumePhase, 'researching');
+  assert.equal(platform.stored!.state.job, undefined);
 });
 
 test('transient artifact errors preserve the completed job for a later retry', async () => {

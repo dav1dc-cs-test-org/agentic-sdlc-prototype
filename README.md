@@ -138,8 +138,8 @@ compiler upgrades require deliberate review and validation.
 
 | Component | Responsibility |
 | --- | --- |
-| [Controller](src/controller.ts) | Approval commands, state transitions, dependency scheduling, retries, publication gates |
-| [Lifecycle model](src/lifecycle.ts) | Approved-plan integrity and commit-bound evidence |
+| [Controller](src/controller.ts) | Approval commands, state transitions, cost reconciliation, retries, publication gates |
+| [Lifecycle model](src/lifecycle.ts) | Approved-plan integrity, commit-bound evidence, pending cost records |
 | [GitHub adapter](src/github.ts) | Compare-and-swap state, task links, authenticated run discovery, restricted publishing |
 | [Worker](src/worker.ts) | Validate registered jobs and package bounded proposals |
 | [Validation](src/validate.ts) | Actual tests, coverage comparison, scanner-result enforcement |
@@ -161,6 +161,11 @@ not reported as a zero-cost lifecycle. Follow [State Upgrades](docs/operations.m
 before deploying to an existing installation; older controller and worker runs
 must be stopped before version-2 state is written.
 
+The optional `pendingCosts` queue preserves unsettled accounting independently
+of the active job. Existing version-2 records load without it and keep their
+totals unchanged. Older strict readers cannot load records containing this
+extension, so deployment and rollback must retain support for it.
+
 Workers receive read-only repository credentials. They return reports and text
 changes as artifacts. The separate controller validates paths, sizes, stage
 permissions, regular-file types, baseline tests, and branch history before
@@ -175,11 +180,30 @@ from failed runs never supply passing evidence; see
 [Incomplete Security Reviews](docs/operations.md#incomplete-security-reviews).
 Budget telemetry does not yet independently gate acceptance.
 
+Active-job cost-receipt errors cannot leave reconciliation retrying indefinitely.
+Transient retrieval errors retry until the registered job timeout; invalid
+receipts or exhausted retrieval retries consume the existing worker-failure
+budget and mark cost history incomplete. The affected result is not accepted.
+See [Cost Receipt Failures](docs/operations.md#cost-receipt-failures).
+
+Cancellation, pause, timeout, and replanning retain unsettled job identities
+before clearing active work. Missing telemetry is retried even after a stage
+advances or the lifecycle ends, without accepting old results. Pending values
+are excluded from totals until complete or until their fixed collection window
+expires (90 minutes from first deferral by default). Settlement adds observed
+values once; unavailable data is explicitly marked incomplete. This does not
+reconstruct job identities already discarded by older controllers. See
+[Deferred Cost Collection](docs/operations.md#deferred-cost-collection).
+
 Testing derives a risk-based coverage map from approved behavior even when the
 issue gives few test details. It must not invent missing product decisions or
 use the implementation itself as the test oracle. Reports identify executed
 tests, defects, and remaining checks; ambiguous behavior or unavailable required
 validation is blocked. See [Test Design and Coverage](docs/operations.md#test-design-and-coverage).
+
+Documentation may propose edits only within `policy.docsPaths`, with protected
+paths and baseline tests still off limits. Accepted documentation changes trigger
+renewed validation before final review; see [Documentation Edits](docs/operations.md#documentation-edits).
 
 Every source change invalidates earlier gate evidence. Test additions trigger
 new deterministic scans and a new security-agent review before validation and
@@ -190,7 +214,9 @@ The PR's Cost section also records `SDLC_MODEL` and `SDLC_AIC_CREDIT_LIMIT` as
 configured at PR creation, defaulting to `auto` and `250`. These are not a
 per-run settings history: `auto` is a model selector, and the cap applies to
 each inference job rather than each turn. Existing PR descriptions are not
-rewritten when the configuration changes.
+rewritten when configuration or costs change. Cost totals are a creation-time
+snapshot with any pending jobs explicitly excluded; the linked issue status
+reflects later settlement.
 Failed CodeQL gates include bounded rule, file, line, and severity diagnostics
 in repair feedback when available, alongside the workflow evidence link. These
 diagnostics are untrusted context, not permission to suppress a finding or pass

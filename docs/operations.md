@@ -103,8 +103,9 @@ Missing or malformed usage/stop-signal outputs are recorded as `null`, separatel
 from a measured zero or explicit `false`. Missing, expired, duplicate, or oversized
 agent cost artifacts also mean unavailable telemetry. Malformed artifact content
 still fails validation. Deterministic `scan` and `validate` jobs have known zero
-inference usage. Unavailable credit usage marks the existing cost history as
-incomplete; recorded runner time and known credits are retained. Near-limit
+inference usage. Unavailable telemetry is kept pending for bounded retry, not
+immediately marked costed. If collection cannot recover it, cost history is
+marked incomplete and only observed values are recorded. Near-limit
 classification requires measured usage and an explicit non-pre-emption signal.
 
 The pinned gh-aw v0.88.7 compiler only supports literals in `max-ai-credits`.
@@ -126,6 +127,12 @@ model chosen by the inference service. The credit limit is per inference job,
 not per model turn. Publication retries reuse the existing PR without rewriting
 its configuration snapshot. No additional repository variables or permissions
 are required.
+
+The totals are also a snapshot at PR creation. Any pending cost entries are
+explicitly counted and excluded from those totals, not represented as free runs.
+Publication does not wait for them. Follow the linked epic's lifecycle status
+for later settlement, including after PR closure or merge; an existing PR body
+is not rewritten when receipts recover.
 
 ## 2. Configure Environments
 
@@ -427,6 +434,21 @@ not independently prove the coverage map is complete. Test-only permissions,
 immutable baseline tests, deterministic validation, and coverage gates remain
 unchanged.
 
+## Documentation Edits
+
+The shared worker instructions and the [Documentation profile](../.github/agents/document.agent.md)
+permit the `document` stage to propose changes only within `policy.docsPaths`.
+The `test` stage remains limited to `policy.testPaths`, and only `code`, `test`,
+and `document` may propose file changes. Protected paths and existing baseline
+tests remain immutable regardless of these path allowances. Other agent stages
+must leave the source checkout unchanged.
+
+Documentation proposals use the existing report and collect contract. The
+controller validates and publishes accepted changes; agents receive no direct
+GitHub write authority. Accepted doc changes invalidate older gate evidence and
+return the lifecycle to scanning before final review. No-change documentation
+results continue directly to review.
+
 ## Incomplete Security Reviews
 
 The [Security profile](../.github/agents/security.agent.md) reviews the full
@@ -505,6 +527,15 @@ the tally without clearing that warning. This migration does not reconstruct
 past costs or rewrite existing PR descriptions. Version-1 records that already
 have cost totals retain them with `historyComplete: true`.
 
+Deferred accounting adds optional `pendingCosts` to version 2. Existing records
+without it remain valid; no counters or approvals are reset. New entries preserve
+an unsettled job's original identity, deadline, and any observed measurements
+across interruptions. Empty queues are omitted. The extension cannot reconstruct
+jobs already discarded by older code or safely retry receipts already marked
+`job.costedRun`; existing totals and history flags are preserved, not backfilled.
+Older strict version-2 readers reject this field, so drain older runs before
+deployment and retain `pendingCosts` support in any rollback.
+
 For an existing installation:
 
 1. Set `SDLC_ENABLED=false`. Wait for running controller and worker jobs to
@@ -554,8 +585,9 @@ be run manually from the Actions tab, optionally for one issue.
   worker jobs: rerun attempts are deliberately excluded from trusted results.
 - If the default branch or issue scope changes, use `/sdlc revise ...` and
   approve the new plan. Earlier branches remain available for inspection.
-- Cancellation invalidates in-flight results before requesting cancellation of
-  the worker run. A late artifact cannot restart the cancelled lifecycle.
+- Cancellation saves any unsettled accounting identity while invalidating
+  in-flight results, before requesting cancellation of the worker run. A late
+  receipt can update costs; a late result cannot restart the lifecycle.
 
 `SDLC_ENABLED=false` prevents new controller transitions and worker starts.
 For an immediate emergency stop, also cancel in-progress controller and worker
@@ -565,6 +597,67 @@ Logs and artifacts are retained according to Actions policy; worker evidence
 artifacts request 14-day retention. Durable state and issue/PR summaries retain
 the links, not perpetual copies of expiring artifacts. Adjust retention for
 your audit needs through a reviewed workflow change.
+
+### Cost Receipt Failures
+
+A completed workflow can still have an unreadable or invalid `sdlc-cost`
+receipt. Cost retrieval errors use the same retry classification as result
+retrieval: transient errors retain the registered job until its
+`jobTimeoutMinutes` deadline (90 minutes from job creation by default).
+Recovered retrieval is charged once and continues normal result validation.
+
+Malformed receipts and non-retryable download failures consume one worker
+failure immediately; transient failures still occurring after the deadline do
+the same. The controller clears that attempt without accepting its result and
+registers a replacement in the same stage while the failure budget remains.
+At `maxJobAttempts` consecutive failures (two by default), the lifecycle becomes
+`blocked` instead of repeatedly reading the same bad receipt. The issue status
+identifies the stage, job, bounded error detail, and run link.
+
+Known totals are preserved and `spend.historyComplete` is set to `false` when
+active-job cost collection is abandoned. Previously observed pending values are
+settled once; no missing duration or credits are invented. This bounded worker
+failure path handles thrown retrieval and validation errors. Explicit `null`
+telemetry and costs of abandoned jobs use the independent path below.
+
+Inspect the linked run and correct the cause before a manual `/sdlc retry`.
+Do not rewrite the receipt as zero, lower validation gates, or use GitHub's
+worker rerun button. Changes to protected controller code still require the
+normal trusted-revision recovery process.
+
+### Deferred Cost Collection
+
+Before pause, cancellation, replanning, or replacement drops a dispatched,
+uncosted job, the controller saves its compact identity in `pendingCosts` in
+the same state write. Failed cancellation or a lost response cannot erase that
+identity. Incomplete receipts are also retained there when an active stage
+continues or advances. Pending values are excluded from aggregate totals and
+shown as pending in status, not charged again on every read.
+
+Scheduled, completion-event, and manual reconciliation use the job's original
+workflow, actor, trusted revision, and first-attempt run ID, even after the
+current plan changes. Abandoned running jobs receive cancellation retries.
+Accounting runs before paused, blocked, cancelled, merged, and closed-issue
+returns. It reads costs only, never old worker results, and cannot authorize
+changes or satisfy a gate. Transient accounting API failures do not stop a
+newer job or consume its infrastructure-failure budget.
+
+The collection deadline is fixed at first deferral plus `jobTimeoutMinutes`
+(90 minutes by default). Retries, resume, and revision do not extend it. A
+complete receipt settles once; partial reads retain known credits, stop signals,
+the largest observed runner duration, and an available original cap. Tally
+updates and queue removal are one compare-and-swap state write. Failed writes
+retry from persisted state; a committed write with a lost response is not charged
+again on reload.
+
+If telemetry is still incomplete after the deadline, or a lookup or receipt
+fails permanently, automatic collection stops with an **Incomplete cost
+accounting** comment. Only observed values are added and
+`spend.historyComplete` becomes `false`; unavailable is never measured zero.
+The comment retains the original job, commit, plan, and any run reference.
+Check those records manually if further accounting is needed. Recovering another
+receipt never clears an earlier incomplete-history warning. Turning
+`SDLC_ENABLED` off also stops these reconciliation attempts until re-enabled.
 
 ### Blocked Scan Repairs
 

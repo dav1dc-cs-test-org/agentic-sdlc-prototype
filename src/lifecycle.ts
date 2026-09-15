@@ -36,6 +36,14 @@ export interface Spend {
   historyComplete: boolean;
 }
 
+export type JobIdentity = Pick<Job, 'id' | 'stage' | 'inputSha' | 'controlSha' | 'planHash' | 'createdAt' | 'runId'>;
+
+export interface PendingCost {
+  job: JobIdentity;
+  expiresAt: string;
+  observed?: { runnerMs: number; credits: number | null; preempted: boolean | null; creditLimit?: number };
+}
+
 export interface Evidence {
   stage: Stage;
   sha: string;
@@ -67,6 +75,7 @@ export interface Lifecycle {
   repairs: number;
   failures: number;
   spend: Spend;
+  pendingCosts?: PendingCost[];
   feedback: string;
   resumePhase?: Phase;
   error?: string;
@@ -85,6 +94,34 @@ export function createLifecycle(issueNumber: number, requester: string, request:
   };
 }
 
+export function deferCost(state: Lifecycle, job: Job, expiresAt: string, observed?: PendingCost['observed']): PendingCost | undefined {
+  if (job.costedRun !== undefined || !job.dispatchedAt && job.runId === undefined) return;
+  state.pendingCosts ??= [];
+  let pending = state.pendingCosts.find(item => item.job.id === job.id);
+  if (!pending) {
+    pending = { job: { id: job.id, stage: job.stage, inputSha: job.inputSha, controlSha: job.controlSha,
+      planHash: job.planHash, createdAt: job.createdAt }, expiresAt };
+    state.pendingCosts.push(pending);
+  }
+  if (job.runId !== undefined) pending.job.runId = job.runId;
+  if (observed) observeCost(pending, observed);
+  return pending;
+}
+
+export function observeCost(pending: PendingCost, cost: NonNullable<PendingCost['observed']>): void {
+  const previous = pending.observed;
+  const creditLimit = cost.creditLimit ?? previous?.creditLimit;
+  pending.observed = { ...cost, runnerMs: Math.max(cost.runnerMs, previous?.runnerMs ?? 0),
+    credits: cost.credits ?? previous?.credits ?? null, preempted: cost.preempted ?? previous?.preempted ?? null };
+  if (creditLimit !== undefined) pending.observed.creditLimit = creditLimit;
+}
+
+export function forgetCost(state: Lifecycle, jobId: string): void {
+  if (!state.pendingCosts) return;
+  state.pendingCosts = state.pendingCosts.filter(item => item.job.id !== jobId);
+  if (!state.pendingCosts.length) delete state.pendingCosts;
+}
+
 // A run the limiter pre-empted is counted only as pre-empted: the two outcomes are exclusive.
 export function recordSpend(state: Lifecycle, cost: {
   runnerMs: number; credits: number | null; preempted: boolean | null; creditLimit?: number;
@@ -93,7 +130,7 @@ export function recordSpend(state: Lifecycle, cost: {
   state.spend.runs += 1;
   state.spend.runnerMs += Math.max(0, cost.runnerMs);
   state.spend.credits += Math.max(0, cost.credits ?? 0);
-  if (cost.credits === null) state.spend.historyComplete = false;
+  if (cost.credits === null || cost.preempted === null) state.spend.historyComplete = false;
   if (cost.preempted) state.spend.preempted += 1;
   else if (cost.preempted === false && cost.credits !== null && creditLimit > 0 && cost.credits >= creditLimit * 0.8) {
     state.spend.nearLimit += 1;

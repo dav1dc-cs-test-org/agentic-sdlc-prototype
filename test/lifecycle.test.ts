@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { approvePlan, makePlan } from '../src/domain.ts';
+import { lifecycleSchema } from '../src/contracts.ts';
 import {
-  assertCurrentResult, assertPublishable, createLifecycle, nextTask, recordChange,
+  assertCurrentResult, assertPublishable, createLifecycle, deferCost, forgetCost, nextTask, recordChange,
   requestRepair, startJob, validateTasks, type Task,
 } from '../src/lifecycle.ts';
 
@@ -22,6 +23,54 @@ function approvedState() {
   state.tasks = structuredClone(tasks);
   return state;
 }
+
+test('deferred costs preserve original job identity across interruption and serialization', () => {
+  const state = approvedState();
+  state.phase = 'coding';
+  const job = startJob(state, 'code', at);
+  const expiresAt = '2026-09-08T14:00:00Z';
+  deferCost(state, job, expiresAt);
+  assert.equal(state.pendingCosts, undefined);
+  job.dispatchedAt = at;
+  deferCost(state, job, expiresAt);
+  job.runId = 10;
+  deferCost(state, job, '2026-09-08T15:00:00Z', { runnerMs: 60_000, credits: null, preempted: null });
+  state.job = undefined;
+  state.phase = 'cancelled';
+  const restored = lifecycleSchema.parse(JSON.parse(JSON.stringify(state)));
+  assert.deepEqual(restored, JSON.parse(JSON.stringify(state)));
+  assert.equal(restored.pendingCosts!.length, 1);
+  assert.equal(restored.pendingCosts![0]!.expiresAt, expiresAt);
+  assert.deepEqual(restored.pendingCosts![0]!.job, {
+    id: job.id, stage: 'code', inputSha: job.inputSha, controlSha: job.controlSha,
+    planHash: job.planHash, createdAt: at, runId: 10,
+  });
+  assert.deepEqual(restored.pendingCosts![0]!.observed, { runnerMs: 60_000, credits: null, preempted: null });
+  job.feedback = 'Later changes cannot rewrite retained identity';
+  job.controlSha = finalSha;
+  assert.equal(restored.pendingCosts![0]!.job.controlSha, baseSha);
+  forgetCost(restored, job.id);
+  assert.equal(restored.pendingCosts, undefined);
+  forgetCost(restored, job.id);
+  job.costedRun = 10;
+  deferCost(restored, job, expiresAt);
+  assert.equal(restored.pendingCosts, undefined);
+});
+
+test('pending-cost schema rejects duplicates, malformed observations, and extra authority', () => {
+  const state = approvedState();
+  state.phase = 'coding';
+  const job = startJob(state, 'code', at);
+  job.dispatchedAt = at;
+  deferCost(state, job, '2026-09-08T14:00:00Z');
+  const pending = state.pendingCosts![0]!;
+  for (const pendingCosts of [
+    [pending, pending],
+    [{ ...pending, expiresAt: 'invalid' }],
+    [{ ...pending, job: { ...pending.job, approved: true } }],
+    [{ ...pending, observed: { runnerMs: -1, credits: null, preempted: null } }],
+  ]) assert.throws(() => lifecycleSchema.parse({ ...state, pendingCosts }));
+});
 
 test('task ordering follows dependencies rather than list order', () => {
   const state = approvedState();

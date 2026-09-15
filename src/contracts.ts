@@ -134,13 +134,20 @@ export const lifecycleSchema = z.object({
   processedEvents: z.array(z.string()).max(10000),
   sequence: z.number().int().min(0), repairs: z.number().int().min(0), failures: z.number().int().min(0),
   spend: spendSchema.extend({ historyComplete: z.boolean() }),
+  pendingCosts: z.array(z.object({
+    job: jobSchema.pick({ id: true, stage: true, inputSha: true, controlSha: true, planHash: true,
+      createdAt: true, runId: true }),
+    expiresAt: z.iso.datetime(),
+    observed: costSchema.extend({ runnerMs: z.number().min(0).finite() }).optional(),
+  }).strict()).max(100).refine(items => new Set(items.map(item => item.job.id)).size === items.length,
+    'Duplicate pending cost job').optional(),
   feedback: z.string().max(24000), resumePhase: phaseSchema.optional(), error: z.string().max(12000).optional(),
   prNumber: numberSchema.optional(),
 }).strict() satisfies z.ZodType<Lifecycle>;
 
 const storedLifecycleSchema = z.discriminatedUnion('schemaVersion', [
   lifecycleSchema,
-  lifecycleSchema.extend({ schemaVersion: z.literal(1), spend: spendSchema.optional() }),
+  lifecycleSchema.extend({ schemaVersion: z.literal(1), spend: spendSchema.optional(), pendingCosts: z.never().optional() }),
 ]);
 
 export function migrateLifecycle(input: unknown): Lifecycle {

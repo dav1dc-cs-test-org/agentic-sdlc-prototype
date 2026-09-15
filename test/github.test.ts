@@ -557,6 +557,8 @@ test('final PR, advisory review, and commit check are idempotent and reference t
     stage: stage as 'scan' | 'security' | 'test' | 'validate' | 'review', sha: newSha,
     jobId: `123-${stage}`, runId: 1, summary: 'Verified. Closes owner/repo#456.',
   }));
+  state.pendingCosts = [{ job: { id: '123-9', stage: 'code', inputSha: baseSha, controlSha: baseSha,
+    planHash: state.plan.hash, createdAt: '2026-09-08T12:00:00Z' }, expiresAt: '2026-09-08T13:30:00Z' }];
   const pulls: Record<string, unknown>[] = [];
   const reviews: Record<string, unknown>[] = [];
   const checks: Record<string, unknown>[] = [];
@@ -581,6 +583,9 @@ test('final PR, advisory review, and commit check are idempotent and reference t
     throw new Error(`Unexpected request: ${method} ${path}`);
   }));
   assert.equal(await github.publish(state), 126);
+  const snapshot = String(pulls[0]!.body);
+  delete state.pendingCosts;
+  state.spend.credits += 42;
   const changedConfiguration = new GitHub('owner/repo', { ...policy, maxJobCredits: 575 },
     'sdlc[bot]', github.api, 'later-model');
   assert.equal(await changedConfiguration.publish(state), 126);
@@ -600,6 +605,10 @@ test('final PR, advisory review, and commit check are idempotent and reference t
   assert.match(cost, /not a resolved per-run model/);
   assert.match(cost, /each inference job, not each turn/);
   assert.match(cost, /earlier runs may have used different settings/);
+  assert.match(cost, /Cost snapshot at PR creation/);
+  assert.match(cost, /Pending cost collection:\*\* 1 job\(s\) are excluded from these totals/);
+  assert.match(cost, /https:\/\/github.com\/owner\/repo\/issues\/123/);
+  assert.equal(String(pulls[0]!.body), snapshot, 'Later costs and configuration cannot rewrite the original PR snapshot');
   assert.equal(reviews.length, 1);
   assert.equal(reviews[0]!.event, 'COMMENT');
   assert.equal(reviews[0]!.commit_id, newSha);

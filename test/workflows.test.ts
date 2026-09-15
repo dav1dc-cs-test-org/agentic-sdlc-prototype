@@ -215,6 +215,25 @@ test('workflow cost receipts distinguish missing signals from measured zero and 
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('shared worker instructions agree with the Documentation role on permitted edits', () => {
+  const role = readFileSync('.github/agents/document.agent.md', 'utf8');
+  assert.match(role, /Update only paths in `policy\.docsPaths`/);
+  const instructions = readFileSync('.github/workflows/sdlc-agent.md', 'utf8').replace(/\s+/g, ' ');
+  assert.match(instructions, /Only `code`, `test`, and `document` stages may propose file changes/);
+  assert.match(instructions, /The `test` stage may change only paths in `policy\.testPaths`/);
+  assert.match(instructions, /the `document` stage may change only paths in `policy\.docsPaths`/);
+  assert.match(instructions, /do not override protected-path restrictions/);
+  assert.match(instructions, /Existing baseline tests are immutable/);
+  assert.match(instructions, /All other stages must leave the source checkout unchanged/);
+  assert.doesNotMatch(instructions, /Only code and test stages may propose file changes/);
+  const prompt = read('sdlc-agent.lock.yml').jobs.activation.steps.find(
+    (step: { env?: Record<string, string> }) => step.env?.GH_AW_PROMPT_CONFIG);
+  assert.ok(prompt);
+  const config = JSON.parse(prompt.env.GH_AW_PROMPT_CONFIG);
+  assert.ok(config.items.some((item: { content_env?: string }) => item.content_env &&
+    prompt.env[item.content_env]?.trim() === '{{#runtime-import .github/workflows/sdlc-agent.md}}'));
+});
+
 test('research requires a product-fit architecture decision and blocks unsupported execution', () => {
   const source = readFileSync('.github/agents/research.agent.md', 'utf8');
   const profile = parse(source.split('---')[1]!);
